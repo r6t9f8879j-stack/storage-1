@@ -18,8 +18,13 @@ param(
     [int]$CheckSeconds   = 15,
     [int]$LeaderTimeout  = 75,   # consecutive failed leader pings before promote
     [int]$MaxUptimeMin   = 350,  # hand off the job before the 420-min timeout
-    [string]$LogFile     = if ($env:RUNNER_WORKSPACE) { Join-Path $env:RUNNER_WORKSPACE "keep-alive.log" } else { Join-Path $env:TEMP "keep-alive.log" }
+    [string]$LogFile     = ""
 )
+
+if (-not $LogFile) {
+    if ($env:RUNNER_WORKSPACE) { $LogFile = Join-Path $env:RUNNER_WORKSPACE "keep-alive.log" }
+    else                      { $LogFile = Join-Path $env:TEMP "keep-alive.log" }
+}
 
 $ErrorActionPreference = "Continue"
 function Log($m) { "$(Get-Date -Format o) $m" | Out-File -FilePath $LogFile -Append -Encoding utf8 }
