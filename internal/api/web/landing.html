@@ -196,6 +196,9 @@ code{font-family:var(--mono);font-size:.84em;color:var(--secondary)}
   cursor:pointer;transition:.15s;
 }
 .ctrl-btn:hover{color:var(--primary);border-color:var(--border2)}
+.ctrl-btn.danger{color:var(--red);border-color:rgba(255,107,138,.3)}
+.ctrl-btn.danger:hover{border-color:var(--red)}
+.ctrl-btn:disabled{opacity:.45;cursor:wait}
 
 /* ── Card ────────────────────────────────────────────────────────────── */
 .card{
@@ -368,6 +371,47 @@ tr.highlight td{background:rgba(77,159,255,.06)}
 .code-block .c{color:var(--dim)}
 .code-block .hl{color:var(--secondary)}
 
+/* ── Toolbar / inputs (Files tab) ────────────────────────────────────── */
+.toolbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.85rem}
+.toolbar input,.toolbar select,.toolbar .tb-text{
+  font-family:var(--mono);font-size:.72rem;
+  background:var(--bg2);color:var(--text);
+  border:1px solid var(--border);border-radius:6px;
+  padding:.3rem .5rem;
+}
+.toolbar input:focus,.toolbar select:focus{border-color:var(--border2);outline:none}
+.tb-label{font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.crumbs{display:flex;gap:.3rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem}
+.crumb{
+  font-size:.68rem;font-family:var(--mono);color:var(--dim);
+  cursor:pointer;padding:.12rem .35rem;border-radius:4px;
+}
+.crumb:hover{color:var(--primary);background:var(--surface2)}
+.crumb.sep{color:var(--dim2);cursor:default}
+.keylbl{font-family:var(--mono);font-size:.72rem;word-break:break-all}
+.file-kind{font-size:.78rem}
+.thumb{width:42px;height:42px;object-fit:cover;border-radius:7px;border:1px solid var(--border)}
+.media{max-width:100%;max-height:70vh;border-radius:8px}
+
+/* ── Modal ───────────────────────────────────────────────────────────── */
+#fb-modal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:1.2rem;background:rgba(0,0,0,.78)}
+#fb-modal.open{display:flex}
+#fb-modal .mw{position:relative;width:min(92vw,980px);max-height:90vh;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+#fb-modal .mh{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;border-bottom:1px solid var(--border)}
+#fb-modal .mh h3{flex:1;font-family:var(--mono);font-size:.72rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+#fb-modal .mb{overflow:auto;display:flex;align-items:center;justify-content:center;min-height:180px;padding:1rem}
+
+/* frame + text arrow, toast */
+#fb-pager-frame{display:block;margin-top:.6rem;text-align:center}
+.toast{
+  position:fixed;left:50%;bottom:1.4rem;transform:translateX(-50%);
+  z-index:80;background:var(--bg2);border:1px solid var(--border2);
+  color:var(--text);font-family:var(--mono);font-size:.72rem;
+  padding:.5rem .9rem;border-radius:8px;max-width:88vw;box-shadow:0 8px 30px rgba(0,0,0,.5);
+  display:none;
+}
+.toast.show{display:block;animation:fadeUp .25s both}
+
 /* ── Footer ──────────────────────────────────────────────────────────── */
 .foot{
   margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
@@ -408,6 +452,7 @@ tr.highlight td{background:rgba(77,159,255,.06)}
   <!-- Tabs -->
   <div class="tabs">
     <div class="tab active" onclick="switchTab('overview',this)">Overview</div>
+    <div class="tab" onclick="switchTab('files',this)">Files</div>
     <div class="tab" onclick="switchTab('api',this)">API</div>
   </div>
 
@@ -451,7 +496,7 @@ tr.highlight td{background:rgba(77,159,255,.06)}
       <div class="card-body" id="transfers-body"></div>
     </div>
 
-    <!-- 3. Durability & Hardening -->
+    <!-- Durability & Hardening -->
     <div class="card open" id="card-checks" style="--card-accent:var(--green)">
       <div class="card-head" onclick="tog(this)">
         <h2>Durability &amp; Hardening</h2>
@@ -461,7 +506,7 @@ tr.highlight td{background:rgba(77,159,255,.06)}
       <div class="card-body" id="checks-body"></div>
     </div>
 
-    <!-- 4. Lifecycle -->
+    <!-- Lifecycle -->
     <div class="card open" id="card-milestones" style="--card-accent:var(--indigo)">
       <div class="card-head" onclick="tog(this)">
         <h2>Lifecycle</h2>
@@ -471,6 +516,17 @@ tr.highlight td{background:rgba(77,159,255,.06)}
     </div>
 
   </div><!-- /tab-overview -->
+
+  <!-- Files tab -->
+  <div id="tab-files" style="display:none">
+    <div class="card open" id="card-files" style="--card-accent:var(--teal)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Objects &amp; Media</h2>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="files-body"></div>
+    </div>
+  </div><!-- /tab-files -->
 
   <!-- API tab -->
   <div id="tab-api" style="display:none">
@@ -498,6 +554,20 @@ tr.highlight td{background:rgba(77,159,255,.06)}
 
 </div><!-- /wrap -->
 
+<!-- Media preview modal -->
+<div id="fb-modal">
+  <div class="mw">
+    <div class="mh">
+      <h3 id="fb-modal-title"></h3>
+      <button class="ctrl-btn" onclick="closeModal()">close</button>
+    </div>
+    <div class="mb" id="fb-modal-body"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
 <!-- ── Live data (injected by the daemon at request time) ────────────── -->
 <script id="seo-data" type="application/json">__DASHBOARD__</script>
 
@@ -522,7 +592,9 @@ function switchTab(id, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   $('tab-overview').style.display = id === 'overview' ? '' : 'none';
+  $('tab-files').style.display = id === 'files' ? '' : 'none';
   $('tab-api').style.display = id === 'api' ? '' : 'none';
+  if (id === 'files') refreshFiles();
 }
 
 // ── Card collapse ────────────────────────────────────────────────────
@@ -558,6 +630,62 @@ $('head-meta').textContent =
 $('stats-bar').innerHTML = D.kpis.map(k =>
   `<div class="kpi"><div class="n">${k.value}</div><div class="l">${k.label}</div></div>`
 ).join('');
+
+// ── Shared helpers ───────────────────────────────────────────────────
+let myBuckets = D.buckets || [];
+let bucketPublic = {};
+(D.buckets || []).forEach(b => { bucketPublic[b.name] = !!b.public; });
+
+function esc(v) {
+  return String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function fmtSize(n) {
+  if (!n && n !== 0) return '0 B';
+  if (n < 1024) return n + ' B';
+  let f = n;
+  for (const u of ['KiB','MiB','GiB','TiB','PiB']) {
+    f /= 1024;
+    if (f < 1024) return f.toFixed(1) + ' ' + u;
+  }
+  return f.toFixed(1) + ' EiB';
+}
+function fmtDate(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  return isNaN(d) ? '' : d.toLocaleString();
+}
+function apiKey() { return localStorage.getItem('stu-admin-key') || localStorage.getItem('stu-tf-key') || ''; }
+function setApiKey(v) {
+  localStorage.setItem('stu-admin-key', v);
+  localStorage.setItem('stu-tf-key', v);
+  const els = document.querySelectorAll('[data-key-sync]');
+  els.forEach(el => { if (el.value !== v) el.value = v; });
+}
+function hdrs(extra) {
+  const h = Object.assign({}, extra);
+  const k = apiKey();
+  if (k) h['Authorization'] = 'Bearer ' + k;
+  return h;
+}
+async function apiFetch(path, opts) {
+  const res = await fetch(location.origin + path, Object.assign({}, opts, { headers: hdrs(opts && opts.headers) }));
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const e = await res.json(); if (e.error) msg = e.error; } catch(err) {}
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.borderColor = isErr ? 'rgba(255,107,138,.5)' : 'var(--border2)';
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 3200);
+}
 
 // ── Live Status ──────────────────────────────────────────────────────
 (function(){
@@ -596,33 +724,417 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
      <div class="field-table">${fields}</div>`;
 })();
 
-// ── Buckets ──────────────────────────────────────────────────────────
-(function(){
-  const rows = D.buckets.map(b => {
+// ── Buckets: render, create, delete ──────────────────────────────────
+function renderBuckets() {
+  const k = apiKey();
+  const rows = myBuckets.map(b => {
     const pct = Math.max(1, Math.round((b.objects / Math.max(1, D.bucketsMax)) * 100));
     return `<tr>
-      <td><strong>${b.name}</strong> ${b.public ? '<span class="badge ok" style="margin-left:.3rem">public</span>' : '<span class="badge">private</span>'}</td>
-      <td style="font-family:var(--mono);font-weight:700;color:var(--primary)">${b.objects.toLocaleString()}</td>
-      <td style="font-family:var(--mono)">${b.sizeH}</td>
-      <td style="width:42%">
+      <td><strong>${esc(b.name)}</strong> ${b.public ? '<span class="badge ok" style="margin-left:.3rem">public</span>' : '<span class="badge">private</span>'}</td>
+      <td style="font-family:var(--mono);font-weight:700;color:var(--primary)">${(b.objects||0).toLocaleString()}</td>
+      <td style="font-family:var(--mono)">${esc(b.sizeH || fmtSize(b.size))}</td>
+      <td style="width:34%">
         <div class="pbar-wrap">
           <div class="pbar-track"><div class="pbar-fill" style="width:${pct}%;background:var(--secondary)"></div></div>
           <div class="pbar-lbl">${pct}%</div>
         </div>
       </td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="ctrl-btn" onclick="openBucket('${esc(b.name)}')">open</button>
+        ${k ? `<button class="ctrl-btn" onclick="deleteBucket('${esc(b.name)}')">delete</button>` : ''}
+      </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="4" style="color:var(--dim)">no buckets yet</td></tr>';
-  $('buckets-body').innerHTML =
-    `<table>
-      <thead><tr><th>Bucket</th><th>Objects</th><th>Size</th><th>Share</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-})();
+  }).join('') || '<tr><td colspan="5" style="color:var(--dim)">no buckets yet — create one below</td></tr>';
+
+  $('buckets-body').innerHTML = `
+    <div class="toolbar">
+      <span class="tb-label">API key</span>
+      <input id="admin-key" type="password" placeholder="admin bearer (create / delete buckets)" value="${esc(k)}"
+             data-key-sync style="flex:1;min-width:220px"
+             oninput="setApiKey(this.value)">
+    </div>
+    <div class="toolbar">
+      <span class="tb-label">New bucket</span>
+      <input id="new-bucket-name" type="text" placeholder="name (3-63 chars, a-z 0-9 -)" style="flex:1;min-width:200px">
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.58rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;cursor:pointer;margin-left:.4rem">
+        <input id="new-bucket-public" type="checkbox"> public
+      </label>
+      <button class="ctrl-btn" onclick="createBucket()" style="background:rgba(var(--primary-rgb),.15);color:var(--primary);border-color:rgba(var(--primary-rgb),.3)">create</button>
+      <button class="ctrl-btn" onclick="loadBuckets()">refresh</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Bucket</th><th>Objects</th><th>Size</th><th>Share</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+async function apiBuckets() {
+  const res = await apiFetch('/v1/buckets');
+  const d = await res.json();
+  return d.buckets || [];
+}
+
+async function loadBuckets() {
+  const k = apiKey();
+  if (!k) { myBuckets = D.buckets || []; renderBuckets(); return; }
+  try {
+    const buck = await apiBuckets();
+    myBuckets = buck;
+    buck.forEach(b => { bucketPublic[b.name] = !!b.is_public; });
+    renderBuckets();
+  } catch (err) {
+    toast('list buckets: ' + err.message, true);
+  }
+}
+
+async function createBucket() {
+  const k = apiKey();
+  if (!k) return toast('enter an admin API key first', true);
+  const nameEl = $('new-bucket-name');
+  const name = (nameEl.value || '').trim();
+  if (!name) return toast('enter a bucket name', true);
+  const pub = !!$('new-bucket-public').checked;
+  const btn = event && event.target;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch('/v1/buckets/' + encodeURIComponent(name) + '?public=' + pub, { method: 'PUT' });
+    const d = await res.json();
+    nameEl.value = '';
+    $('new-bucket-public').checked = false;
+    toast('bucket created: ' + (d.bucket && d.bucket.name ? d.bucket.name : name));
+    loadBuckets();
+  } catch (err) {
+    toast('create bucket: ' + err.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deleteBucket(name) {
+  if (!confirm('Delete bucket "' + name + '" entirely?')) return;
+  try {
+    await apiFetch('/v1/buckets/' + encodeURIComponent(name), { method: 'DELETE' });
+    toast('bucket deleted: ' + name);
+    if (FB.bucket === name) { FB.bucket = ''; FB.prefix = ''; }
+    loadBuckets();
+  } catch (err) {
+    toast('delete bucket: ' + err.message, true);
+  }
+}
+
+function openBucket(name) {
+  FB.bucket = name;
+  FB.prefix = '';
+  FB.q = '';
+  FB.after = '';
+  switchTab('files', document.querySelectorAll('.tab')[1]);
+  loadFiles(true);
+}
+
+renderBuckets();
+if (apiKey()) loadBuckets();
+
+// ── Files / Objects browser ──────────────────────────────────────────
+const FB = {
+  bucket: '',
+  prefix: '',
+  q: '',
+  after: '',
+  entries: [],
+  folders: [],
+  next: '',
+  loading: false
+};
+
+function objPath(b, key) {
+  return '/v1/buckets/' + encodeURIComponent(b) + '/objects/' +
+    key.split('/').map(encodeURIComponent).join('/');
+}
+function publicPath(b, key) {
+  return '/v1/public/' + encodeURIComponent(b) + '/' +
+    key.split('/').map(encodeURIComponent).join('/');
+}
+function isPublicBucket() { return !!bucketPublic[FB.bucket]; }
+
+function refreshFiles() {
+  const wrap = $('files-body');
+  const k = apiKey();
+  const opts = (D.buckets || []).concat(myBuckets.filter(b => !(D.buckets || []).some(x => x.name === b.name)))
+    .map(b => `<option value="${esc(b.name)}">${esc(b.name)}</option>`).join('');
+  if (!k) {
+    wrap.innerHTML = `<div style="padding:.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:7px;font-size:.66rem;color:var(--dim)">enter an API key (read or admin) to browse objects — use the field in the Buckets card or below</div>
+      <div class="toolbar" style="margin-top:.6rem"><span class="tb-label">API key</span>
+        <input data-key-sync type="password" placeholder="bearer key" style="flex:1;min-width:220px" value="${esc(k)}" oninput="setApiKey(this.value)"></div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="toolbar">
+      <span class="tb-label">Bucket</span>
+      <select id="fb-bucket" style="min-width:160px" onchange="changeBucket(this.value)">${opts}</select>
+      <button class="ctrl-btn" onclick="loadFiles(true)">refresh</button>
+      ${FB.bucket ? `<button class="ctrl-btn" onclick="switchTab('overview',document.querySelector('.tab'))" title="back to buckets">buckets</button>` : ''}
+    </div>
+    <div id="fb-crumbs" style="min-height:1.4rem"></div>
+    <div class="toolbar">
+      <input id="fb-q" type="text" placeholder="search names…" value="${esc(FB.q)}" style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter')doSearch()">
+      <button class="ctrl-btn" onclick="doSearch()">search</button>
+      <span class="tb-label">Upload</span>
+      <input id="fb-folder" type="text" placeholder="folder (opt)" title="prefix folder, e.g. videos/season1" style="width:130px" onkeydown="if(event.key==='Enter')doUpload()">
+      <input id="fb-file" type="file" style="max-width:190px">
+      <button class="ctrl-btn" onclick="doUpload()" style="background:rgba(var(--primary-rgb),.15);color:var(--primary);border-color:rgba(var(--primary-rgb),.3)">upload</button>
+    </div>
+    <div style="overflow-x:auto"><table id="fb-table"></table></div>
+    <span id="fb-pager-frame"></span>`;
+  const sel = $('fb-bucket');
+  if (FB.bucket) sel.value = FB.bucket;
+  renderCrumbs();
+  renderFilesTable();
+}
+
+function changeBucket(name) {
+  FB.bucket = name;
+  FB.prefix = ''; FB.q = ''; FB.after = '';
+  $('fb-q').value = '';
+  renderCrumbs();
+  loadFiles(true);
+}
+
+function renderCrumbs() {
+  const el = $('fb-crumbs');
+  if (!el) return;
+  if (!FB.bucket) { el.innerHTML = '<div class="crumbs"><span class="crumb">select a bucket to browse objects</span></div>'; return; }
+  const parts = FB.prefix ? FB.prefix.split('/').filter(Boolean) : [];
+  let acc = '';
+  let html = '<div class="crumbs"><span class="crumb" onclick="navigateFolder(\'\')">' + esc(FB.bucket) + ' /</span>';
+  parts.forEach(p => {
+    acc = acc ? acc + p + '/' : p + '/';
+    html += `<span class="crumb sep">/</span><span class="crumb" onclick="navigateFolder('${esc(acc)}')">${esc(p)}</span>`;
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+async function loadFiles(isFresh) {
+  if (FB.loading) return;
+  FB.loading = true;
+  const tbl = $('fb-table');
+  try {
+    if (!FB.bucket) {
+      const bucketNames = (D.buckets || []).map(b => b.name);
+      if (bucketNames.length) FB.bucket = bucketNames[0];
+      else { if (tbl) tbl.innerHTML = '<tr><td style="color:var(--dim)">no buckets — create one from the Overview tab</td></tr>'; return; }
+    }
+    if (isFresh) { FB.after = ''; }
+    const q = [];
+    if (FB.prefix) q.push('prefix=' + encodeURIComponent(FB.prefix));
+    if (FB.q) q.push('q=' + encodeURIComponent(FB.q));
+    if (FB.after) q.push('after=' + encodeURIComponent(FB.after));
+    q.push('delimiter=/'); q.push('limit=200');
+    const res = await apiFetch('/v1/buckets/' + encodeURIComponent(FB.bucket) + '/objects?' + q.join('&'));
+    const d = await res.json();
+    FB.entries = d.entries || [];
+    FB.folders = d.folders || [];
+    FB.next = d.next || '';
+    if (!FB.after && isFresh) FB.after = '';
+    const sel = $('fb-bucket');
+    if (sel && FB.bucket && sel.value !== FB.bucket) sel.value = FB.bucket;
+    renderFilesTable();
+  } catch (err) {
+    if (tbl) tbl.innerHTML = '<tr><td style="color:var(--red);font-family:var(--mono)">' + esc(err.message) + '</td></tr>';
+  } finally {
+    FB.loading = false;
+  }
+}
+
+function kindOf(e) {
+  const ct = (e.content_type || '');
+  if (ct.indexOf('image/') === 0) return 'image';
+  if (ct.indexOf('video/') === 0) return 'video';
+  if (ct.indexOf('audio/') === 0) return 'audio';
+  if (ct === 'application/pdf') return 'pdf';
+  const ext = (e.key || '').toLowerCase().split('.').pop();
+  if (!ct || ct === 'application/octet-stream' || ct === 'binary/octet-stream') {
+    if (['jpg','jpeg','png','gif','webp','bmp','avif'].indexOf(ext) >= 0) return 'image';
+    if (['mp4','webm','mkv','mov','avi','m4v'].indexOf(ext) >= 0) return 'video';
+    if (['mp3','wav','ogg','m4a','flac','aac'].indexOf(ext) >= 0) return 'audio';
+    if (ext === 'pdf') return 'pdf';
+  }
+  return 'file';
+}
+
+function renderFilesTable() {
+  const tbl = $('fb-table');
+  if (!tbl) return;
+  const k = apiKey();
+  let rows = '';
+  FB.folders.forEach(f => {
+    rows += `<tr>
+      <td class="file-kind" style="color:var(--secondary);width:34px">📁</td>
+      <td><strong class="keylbl" style="color:var(--secondary);cursor:pointer" onclick="navigateFolder('${esc(f)}')">${esc(f)}</strong></td>
+      <td style="color:var(--dim)"></td>
+      <td style="color:var(--dim)">folder</td>
+      <td style="color:var(--dim2)"></td>
+      <td style="text-align:right"><button class="ctrl-btn" onclick="navigateFolder('${esc(f)}')">open</button></td>
+    </tr>`;
+  });
+  FB.entries.forEach(e => {
+    const kind = kindOf(e);
+    const icon = kind === 'image' ? '🖼' : kind === 'video' ? '▶' : kind === 'audio' ? '♪' : kind === 'pdf' ? '📄' : '🗎';
+    rows += `<tr>
+      <td class="file-kind" style="width:34px">${icon}</td>
+      <td><span class="keylbl">${esc(e.key)}</span></td>
+      <td style="font-family:var(--mono);white-space:nowrap">${fmtSize(e.size)}</td>
+      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)" title="${esc(e.content_type)}">${esc(e.content_type || '')}</td>
+      <td style="color:var(--dim2);white-space:nowrap">${fmtDate(e.updated_at)}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="ctrl-btn" onclick="previewEntry(${FB.entries.indexOf(e)})">preview</button>
+        <button class="ctrl-btn" onclick="downloadEntry(${FB.entries.indexOf(e)})">get</button>
+        ${k ? `<button class="ctrl-btn danger" onclick="deleteEntry(${FB.entries.indexOf(e)})">del</button>` : ''}
+      </td>
+    </tr>`;
+  });
+  if (!rows) rows = '<tr><td colspan="6" style="color:var(--dim)">no objects here' + (FB.q ? ' matching "' + esc(FB.q) + '"' : '') + '</td></tr>';
+  tbl.innerHTML = `<thead><tr><th style="width:34px"></th><th>Key</th><th>Size</th><th>Type</th><th>Modified</th><th></th></tr></thead><tbody>${rows}</tbody>`;
+  const frame = $('fb-pager-frame');
+  if (frame) frame.innerHTML = FB.next
+    ? `<button class="ctrl-btn" onclick="loadMore()" style="width:100%">load more…</button>`
+    : (FB.folders.length || FB.entries.length ? `<span style="font-size:.58rem;color:var(--dim2);font-family:var(--mono)">— end of list —</span>` : '');
+}
+
+function navigateFolder(pfx) {
+  FB.prefix = pfx || '';
+  FB.q = '';
+  FB.after = '';
+  const qEl = $('fb-q'); if (qEl) qEl.value = '';
+  renderCrumbs();
+  loadFiles(true);
+}
+
+function doSearch() {
+  const qEl = $('fb-q');
+  FB.q = qEl ? qEl.value.trim() : '';
+  FB.after = '';
+  loadFiles(true);
+}
+
+function loadMore() {
+  FB.after = FB.next;
+  loadFiles(false);
+}
+
+async function doUpload() {
+  const k = apiKey();
+  if (!k) return toast('enter an admin API key first', true);
+  if (!FB.bucket) return toast('select a bucket first', true);
+  const fileEl = $('fb-file');
+  const file = fileEl && fileEl.files[0];
+  if (!file) return toast('choose a file to upload', true);
+  const folderEl = $('fb-folder');
+  const folder = folderEl ? folderEl.value.trim() : '';
+  const key = (folder ? folder.replace(/\/+$/, '') + '/' : '') + file.name;
+  const btn = event && event.target; if (btn) btn.disabled = true;
+  toast('uploading ' + file.name + '…');
+  try {
+    await fetch(objPath(FB.bucket, key), {
+      method: 'PUT',
+      headers: hdrs({ 'Content-Type': file.type || 'application/octet-stream' }),
+      body: file
+    });
+    if (fileEl) fileEl.value = '';
+    toast('uploaded: ' + key);
+    loadFiles(true);
+  } catch (err) {
+    toast('upload: ' + (err.message || err), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function entrySrc(e) {
+  if (e.is_public || isPublicBucket()) return publicPath(e.bucket, e.key);
+  return null;
+}
+
+function previewEntry(i) {
+  const e = FB.entries[i];
+  if (!e) return;
+  const kind = kindOf(e);
+  const title = e.bucket + '/' + e.key;
+  $('fb-modal-title').textContent = title;
+  const body = $('fb-modal-body');
+  const direct = entrySrc(e);
+  if (direct) {
+    body.innerHTML = mediaHtml(kind, direct);
+    openModal();
+    return;
+  }
+  body.innerHTML = '<div style="color:var(--dim);font-family:var(--mono);font-size:.68rem">loading…</div>';
+  openModal();
+  fetch(objPath(e.bucket, e.key), { headers: hdrs() })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      body.innerHTML = mediaHtml(kind, url);
+      body.querySelectorAll('video,audio').forEach(m => { m.src = url; m.addEventListener('loadedmetadata', () => URL.revokeObjectURL(url), { once: true }); });
+    })
+    .catch(err => { body.innerHTML = '<div style="color:var(--red);font-family:var(--mono);font-size:.7rem">preview failed: ' + esc(err.message) + '</div>'; });
+}
+
+function mediaHtml(kind, src) {
+  if (kind === 'image') return `<img class="media" src="${src}" alt="" onerror="this.style.display='none'">`;
+  if (kind === 'video') return `<video class="media" controls autoplay preload="metadata" src="${src}"></video>`;
+  if (kind === 'audio') return `<audio class="media" controls autoplay preload="metadata" src="${src}"></audio>`;
+  if (kind === 'pdf') return `<iframe class="media" src="${src}" style="width:100%;min-height:70vh;border:none"></iframe>`;
+  return `<div style="text-align:center;font-family:var(--mono);font-size:.68rem;color:var(--dim)">no inline preview for this file type</div>`;
+}
+
+function openModal() { $('fb-modal').classList.add('open'); }
+function closeModal() {
+  $('fb-modal').classList.remove('open');
+  const body = $('fb-modal-body');
+  body.querySelectorAll('video,audio').forEach(m => { m.pause(); });
+  body.innerHTML = '';
+}
+
+function downloadEntry(i) {
+  const e = FB.entries[i];
+  if (!e) return;
+  const direct = entrySrc(e);
+  if (direct) { window.open(direct, '_blank'); return; }
+  fetch(objPath(e.bucket, e.key), { headers: hdrs() })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+    .then(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = e.key.split('/').pop() || e.key;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    })
+    .catch(err => toast('download: ' + err.message, true));
+}
+
+async function deleteEntry(i) {
+  const e = FB.entries[i];
+  if (!e) return;
+  if (!confirm('Trash object "' + e.bucket + '/' + e.key + '"?')) return;
+  try {
+    await apiFetch(objPath(e.bucket, e.key), { method: 'DELETE' });
+    toast('trashed: ' + e.key);
+    loadFiles(true);
+  } catch (err) {
+    toast('delete: ' + err.message, true);
+  }
+}
 
 // ── Transfers ────────────────────────────────────────────────────────
 (function(){
   const body = $('transfers-body');
-  let tfKey = localStorage.getItem('stu-tf-key') || '';
+  let tfKey = apiKey();
   let transfers = D.transfers || [];
 
   function tfPct(t) {
@@ -630,22 +1142,10 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
     if (!t.size) return 0;
     return Math.min(99, Math.round(t.progress / t.size * 100));
   }
-  function tfSize(n) {
-    if (!n) return '0 B';
-    if (n < 1024) return n + ' B';
-    let f = n;
-    for (const u of ['KiB','MiB','GiB','TiB']) {
-      f /= 1024;
-      if (f < 1024) return f.toFixed(1) + ' ' + u;
-    }
-    return f.toFixed(1) + ' PiB';
-  }
+  function tfSize(n) { return fmtSize(n); }
   function tfBadge(s) {
     const m = { queued:'bg', downloading:'bg ok', done:'ok', failed:'err', cancelled:'bg err' };
     return `<span class="badge ${m[s]||''}">${s}</span>`;
-  }
-  function esc(v) {
-    return String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function render() {
@@ -710,7 +1210,7 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
           <span id="tf-file-name" style="font-size:.6rem;color:var(--dim);font-family:var(--mono)"></span>
           <div style="flex:1"></div>
           <span style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">API key</span>
-          <input id="tf-api-key" type="password" placeholder="admin bearer" value="${esc(tfKey)}" style="width:150px;font-family:var(--mono);font-size:.66rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.25rem .45rem" oninput="tfKeyInput(this.value)">
+          <input data-key-sync id="tf-api-key" type="password" placeholder="admin bearer" value="${esc(tfKey)}" style="width:150px;font-family:var(--mono);font-size:.66rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.25rem .45rem" oninput="setApiKey(this.value)">
         </div>
       </div>
       ` : '<div style="margin-bottom:.85rem;padding:.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:7px;font-size:.66rem;color:var(--dim)">read-only mode (follower) — transfers need the writer node</div>'}
@@ -720,12 +1220,8 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
           <tbody>${rows || '<tr><td colspan="8" style="color:var(--dim)">no transfers yet</td></tr>'}</tbody>
         </table>
       </div>`;
+    $('tf-bucket').value = D.buckets && D.buckets[0] && D.buckets[0].name || '';
   }
-
-  window.tfKeyInput = function(v) {
-    tfKey = v;
-    localStorage.setItem('stu-tf-key', v);
-  };
 
   window.tfFileChanged = function(el) {
     const name = el.files && el.files[0] ? el.files[0].name : '';
@@ -743,22 +1239,22 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
     const file = fileEl && fileEl.files[0];
     const keyEl = $('tf-key');
     const key = keyEl ? keyEl.value.trim() : '';
-    if (!tfKey) return alert('enter an admin API key in the field above');
+    if (!apiKey()) return alert('enter an admin API key in the field above');
 
     const enc = encodeURIComponent;
     const qs = key ? '?key=' + enc(key) : '';
     const uri = location.origin + '/v1/buckets/' + enc(bucket) + '/transfers' + qs;
-    const hdrs = { 'Authorization': 'Bearer ' + tfKey };
-    let res;
+    const hd = hdrs({});
 
+    let res;
     try {
       if (file) {
-        hdrs['Content-Type'] = 'application/x-bittorrent';
-        res = await fetch(uri, { method: 'POST', headers: hdrs, body: file });
+        hd['Content-Type'] = 'application/x-bittorrent';
+        res = await fetch(uri, { method: 'POST', headers: hd, body: file });
       } else if (url) {
-        hdrs['Content-Type'] = 'application/json';
+        hd['Content-Type'] = 'application/json';
         const body = url.startsWith('magnet:') ? { magnet: url } : { url: url };
-        res = await fetch(uri, { method: 'POST', headers: hdrs, body: JSON.stringify(body) });
+        res = await fetch(uri, { method: 'POST', headers: hd, body: JSON.stringify(body) });
       } else {
         return alert('enter a URL / magnet URI or choose a .torrent file');
       }
@@ -778,9 +1274,9 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
   };
 
   window.tfCancel = async function(bucket, id) {
-    if (!tfKey) return alert('enter an admin API key first');
+    if (!apiKey()) return alert('enter an admin API key first');
     const res = await fetch(location.origin + '/v1/buckets/' + encodeURIComponent(bucket) + '/transfers/' + id, {
-      method: 'DELETE', headers: { 'Authorization': 'Bearer ' + tfKey }
+      method: 'DELETE', headers: hdrs({})
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
@@ -793,12 +1289,12 @@ $('stats-bar').innerHTML = D.kpis.map(k =>
 
   // Live refresh when an API key is stored (read scope suffices).
   setInterval(async () => {
-    if (!tfKey || !D.buckets || !D.buckets.length) return;
+    if (!apiKey() || !D.buckets || !D.buckets.length) return;
     try {
       const all = [];
       for (const b of D.buckets) {
         const r = await fetch(location.origin + '/v1/buckets/' + encodeURIComponent(b.name) + '/transfers', {
-          headers: { 'Authorization': 'Bearer ' + tfKey }
+          headers: hdrs({})
         });
         if (!r.ok) continue;
         const d = await r.json();

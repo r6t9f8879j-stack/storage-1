@@ -104,7 +104,7 @@ function Start-Tunnel {
     }
     if (-not $workDir) { $workDir = $PWD.Path }
     $cfProc = Start-Process -FilePath $cfExe -ArgumentList $argList -WorkingDirectory $workDir -WindowStyle Hidden `
-            -RedirectStandardOutput $TunnelOutLog -RedirectStandardError $TunnelErrLog
+            -RedirectStandardOutput $TunnelOutLog -RedirectStandardError $TunnelErrLog -PassThru
     Log "cloudflared started pid=$($cfProc.Id) cwd=$workDir"
 }
 function Stop-Tunnel {
