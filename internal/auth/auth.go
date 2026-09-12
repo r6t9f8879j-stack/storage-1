@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -371,7 +372,17 @@ func (a *Auth) SignURL(method, bucket, key string, ttl time.Duration, base strin
 	c := &sigClaims{Ver: 1, Method: method, Bucket: bucket, Key: key, Expires: exp}
 	sig := a.mac(c)
 	q := fmt.Sprintf("sig=%s&expires=%d", sig, exp)
-	return fmt.Sprintf("%s/v1/buckets/%s/objects/%s?%s", base, bucket, key, q)
+	return fmt.Sprintf("%s/v1/buckets/%s/objects/%s?%s", base, url.PathEscape(bucket), encodeKeyPath(key), q)
+}
+
+// encodeKeyPath percent-encodes each key segment so keys containing spaces or
+// other reserved characters produce a valid URL while keeping '/' separators.
+func encodeKeyPath(key string) string {
+	segs := strings.Split(key, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return strings.Join(segs, "/")
 }
 
 // VerifySigned parses the required query params and returns whether they are

@@ -33,12 +33,16 @@ func newTestAPI(t *testing.T) http.Handler {
 	t.Cleanup(func() { m.Close() })
 	dataDir := t.TempDir()
 	cfg := &config.Config{
-		NodeID:  "testnode",
-		Role:    config.RoleLeader,
-		DataDir: dataDir,
+		NodeID:       "testnode",
+		Role:         config.RoleLeader,
+		DataDir:      dataDir,
+		MaxBodyBytes: 2 << 30,
 	}
 	a := auth.New(testAdmin, testRead, "peer-secret", 10000)
 	st := store.New(dataDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("store.Init: %v", err)
+	}
 	return New(cfg, a, m, st).Handler()
 }
 

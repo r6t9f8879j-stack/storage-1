@@ -17,10 +17,7 @@ func ErrInvalidF(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 }
 
-var (
-	bucketRe = regexp.MustCompile(`^[a-z0-9][a-z0-9\-._]{1,62}$`)
-	keyRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-._/]{0,1000}$`)
-)
+var bucketRe = regexp.MustCompile(`^[a-z0-9][a-z0-9\-._]{1,62}$`)
 
 // validBucket validates an S3-like bucket name (lowercase letters, digits,
 // hyphens, dots, underscores; 3..63 chars).
@@ -34,8 +31,10 @@ func validBucket(name string) error {
 	return nil
 }
 
-// validKey validates an object key: printable URI-safe characters, slashes as
+// validKey validates an object key: printable ASCII characters, slashes as
 // separators, no leading/trailing slash, no dot-segments, length <= 1024.
+// Spaces and other common filename punctuation are allowed (e.g. screenshot
+// names); clients percent-encode them when the key appears in a URL.
 func validKey(key string) error {
 	if len(key) == 0 || len(key) > 1024 {
 		return fmt.Errorf("%w: object key must be 1-1024 characters", ErrInvalid)
@@ -43,11 +42,17 @@ func validKey(key string) error {
 	if strings.HasPrefix(key, "/") || strings.HasSuffix(key, "/") {
 		return fmt.Errorf("%w: object key must not start or end with '/'", ErrInvalid)
 	}
-	if strings.Contains(key, "..") || strings.ContainsAny(key, "\x00\r\n\t\\:") {
+	if strings.HasPrefix(key, " ") || strings.HasSuffix(key, " ") {
+		return fmt.Errorf("%w: object key must not start or end with a space", ErrInvalid)
+	}
+	if strings.Contains(key, "..") {
 		return fmt.Errorf("%w: object key contains invalid characters", ErrInvalid)
 	}
-	if !keyRe.MatchString(key) {
-		return fmt.Errorf("%w: invalid object key %q", ErrInvalid, key)
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c < 0x20 || c > 0x7e || c == '\\' || c == ':' {
+			return fmt.Errorf("%w: invalid object key %q", ErrInvalid, key)
+		}
 	}
 	return nil
 }

@@ -216,18 +216,19 @@ func magnetKey(m string) string {
 // transfer's default base path.
 func torrentKey(name, fallback string) string {
 	if name != "" {
-		// keep only URI-safe chars; leave slashes so folder-y names stay
-		// hierarchical but they are stripped anyway by validKey rules below
+		// keep letters, digits and common key punctuation; map the rest to '_'.
+		// spaces are preserved, but leading/trailing ones are trimmed because
+		// validKey rejects keys that start or end with a space.
 		k := strings.Map(func(r rune) rune {
 			switch {
 			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 				return r
-			case r == '-' || r == '_' || r == '.' || r == '/':
+			case r == '-' || r == '_' || r == '.' || r == '/' || r == ' ':
 				return r
 			}
 			return '_'
 		}, name)
-		k = strings.Trim(k, "/._")
+		k = strings.Trim(k, "/._ ")
 		if k != "" {
 			return k
 		}
