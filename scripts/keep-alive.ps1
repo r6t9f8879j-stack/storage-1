@@ -29,6 +29,10 @@ if (-not $LogFile) {
 $ErrorActionPreference = "Continue"
 function Log($m) { "$(Get-Date -Format o) $m" | Out-File -FilePath $LogFile -Append -Encoding utf8 }
 
+$logDir       = Split-Path $LogFile
+$TunnelOutLog = Join-Path $logDir "cloudflared.out.log"
+$TunnelErrLog = Join-Path $logDir "cloudflared.err.log"
+
 $exe         = $env:STORAGED_EXE
 $base        = $env:STORAGED_BASE
 $nodeID      = $env:STORAGED_NODE_ID
@@ -92,18 +96,38 @@ function Start-Tunnel {
             return
         }
     }
-    $cfProc = Start-Process -FilePath $cfExe -ArgumentList $argList -WindowStyle Hidden
+    $cfProc = Start-Process -FilePath $cfExe -ArgumentList $argList -WindowStyle Hidden `
+        -RedirectStandardOutput $TunnelOutLog -RedirectStandardError $TunnelErrLog
+    Log "cloudflared started pid=$($cfProc.Id)"
 }
 function Stop-Tunnel {
     if ($cfProc) { try { Stop-Process -Id $cfProc.Id -Force -ErrorAction SilentlyContinue } catch {} ; $cfProc = $null }
+}
+function Tunnel-Alive {
+    if (-not $cfProc) { return $false }
+    if ($cfProc.HasExited) { Log "cloudflared pid=$($cfProc.Id) exited code $($cfProc.ExitCode)"; $cfProc = $null; return $false }
+    return $true
+}
+function Show-Status {
+    "--- $(Get-Date -Format HH:mm:ss) keep-alive state ---"
+    if (Test-Path $LogFile) { Get-Content $LogFile -Tail 4 }
+    if (Test-Path $TunnelOutLog) { Get-Content $TunnelOutLog -Tail 6 }
+    if (Test-Path $TunnelErrLog) { "cloudflared err:"; Get-Content $TunnelErrLog -Tail 6 }
 }
 if ($role -eq "leader") { Start-Tunnel }
 
 # 3) supervision loop
 $leaderFailures = 0
 $handedOff = $false
+$lastStatus = Get-Date
 while ($true) {
     Start-Sleep -Seconds $CheckSeconds
+
+    # log liveness to the step console every ~60s so the Actions UI shows state
+    if (((Get-Date) - $lastStatus).TotalSeconds -ge 60) {
+        Show-Status
+        $lastStatus = Get-Date
+    }
 
     # ensure storaged remains up
     if (-not (Get-Process storaged -ErrorAction SilentlyContinue)) {
@@ -135,7 +159,7 @@ while ($true) {
             if ($leaderFailures -ge $LeaderTimeout) {
                 Log "promoting $nodeID to writer"
                 Invoke-Ost "promote" | Out-Null
-                if (-not $cfProc) { Start-Tunnel }
+                if (-not (Tunnel-Alive)) { Start-Tunnel }
                 $leaderFailures = 0
             }
         } else {
@@ -143,7 +167,7 @@ while ($true) {
         }
     } else {
         # we are (or should be) the writer
-        if (-not $cfProc) { Start-Tunnel }
+        if (-not (Tunnel-Alive)) { Start-Tunnel }
     }
 
     # 4) handoff before the 6h timeout: snapshot then re-dispatch this workflow
