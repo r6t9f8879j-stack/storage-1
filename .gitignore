@@ -1,0 +1,20 @@
+# never commit secrets
+.env
+*.key
+*.pem
+conf/tunnel-credentials.json
+
+# build artifacts
+storaged.exe
+ost.exe
+/dist/
+
+# local runtime data
+/storage/
+*.log
+
+# OS/editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

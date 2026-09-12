@@ -1,0 +1,133 @@
+# storage-host.yml — runs a storaged node on a persistent Windows runner.
+#
+# Deploy one copy of this repo per node:
+#   node-a player = role=leader  (owns the tunnel + writes by default)
+#   node-b player = role=follower (promotes when the leader is dark)
+# Schedule/start them so only one owns the tunnel at a time (the follower
+# never runs cloudflared until it is promoted — see scripts/keep-alive.ps1).
+#
+# Required secrets (per node repo):
+#   STORAGED_ADMIN_KEY / STORAGED_READ_KEY / STORAGED_PEER_SECRET
+#   STORAGED_PEER_URL  (http://<sibling node>:5000)
+#   CF_TUNNEL_CREDENTIALS  (base64 of conf/tunnel-credentials.json — see .env)
+#   GH_TOKEN           (fine-grained PAT with workflow:write to re-dispatch)
+
+name: storage-host
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */2 * * *" # every 2 hours; stagger per node repo
+
+concurrency:
+  group: storage-host
+  cancel-in-progress: false
+
+jobs:
+  host:
+    runs-on: windows-latest
+    timeout-minutes: 420
+    env:
+      STORAGED_LISTEN: 127.0.0.1:5000
+      STORAGED_DATA_DIR: D:\storage
+      STORAGED_NODE_ID: ${{ vars.STORAGED_NODE_ID }}
+      STORAGED_ROLE: ${{ vars.STORAGED_ROLE }}
+      STORAGED_ADMIN_KEY: ${{ secrets.STORAGED_ADMIN_KEY }}
+      STORAGED_READ_KEY: ${{ secrets.STORAGED_READ_KEY }}
+      STORAGED_PEER_SECRET: ${{ secrets.STORAGED_PEER_SECRET }}
+      STORAGED_PEER_ENABLED: "true"
+      STORAGED_PEER_URL: ${{ secrets.STORAGED_PEER_URL }}
+      STORAGED_PEER_KEY: ${{ secrets.STORAGED_PEER_SECRET }}
+      STORAGED_PUBLIC_URL: ${{ vars.STORAGED_PUBLIC_URL }}
+      CF_TUNNEL_ID: f8cde1bb-85e9-44fd-abbd-a652d16fa63f
+      CF_TUNNEL_DOMAIN: storage.chuglii.in
+      CF_TUNNEL_CREDENTIALS: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
+      CLOUDFLARED_DIR: ${{ runner.temp }}\cloudflared
+      CLOUDFLARED_CONFIG: ${{ runner.temp }}\cloudflared\cloudflared.yml
+      CLOUDFLARED_EXE: ${{ runner.temp }}\cloudflared\cloudflared.exe
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      WORKFLOW_SELF: storage-host.yml
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build binaries
+        shell: pwsh
+        run: |
+          go build -o "${{ github.workspace }}\cmd\storaged\storaged.exe" ./cmd/storaged
+          go build -o "${{ github.workspace }}\cmd\ost\ost.exe" ./cmd/ost
+
+      - name: Provision cloudflared (binary + credentials + config)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:CLOUDFLARED_DIR" | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" `
+            -OutFile "$env:CLOUDFLARED_EXE"
+          Copy-Item "conf/cloudflared.yml" "$env:CLOUDFLARED_CONFIG" -Force -ErrorAction Continue
+          $json = [Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:CF_TUNNEL_CREDENTIALS))
+          [System.IO.File]::WriteAllText("$env:CLOUDFLARED_DIR\tunnel-credentials.json", $json)
+          & "$env:CLOUDFLARED_EXE" --version
+
+      - name: Resolve previous run for artifact rescue
+        shell: pwsh
+        id: prevrun
+        run: |
+          $prev = & gh run list --workflow=storage-host.yml --limit=5 `
+                --json databaseId,status,conclusion --jq "[.[] | select(.status==\"completed\" and .conclusion==\"success\")][0].databaseId"
+          if (-not $prev) { $prev = $null }
+          Write-Host "previous successful run: $prev"
+          "run_id=$prev" | Out-File -FilePath "$env:GITHUB_OUTPUT" -Append -Encoding utf8
+
+      - name: Restore rescue snapshot (previous successful run)
+        if: steps.prevrun.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: storaged-rescue
+          run-id: ${{ steps.prevrun.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .rescue
+
+      - name: Parallel setup (Defender/NTP/storage dirs)
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/parallel-setup.ps1
+
+      - name: Restore snapshot into storage dir
+        shell: pwsh
+        run: |
+          if (Test-Path .rescue) {
+            $zip = Get-ChildItem -Recurse .rescue -Filter *.zip | Select-Object -First 1
+            if ($zip) { Expand-Archive -Path $zip.FullName -DestinationPath .rescue\unzip -Force }
+            if (Test-Path ".rescue\unzip\meta.db") {
+              Copy-Item ".rescue\unzip\meta.db" "D:\storage\db\meta.db" -Force
+              Write-Host "restored meta.db snapshot"
+            }
+            if (Test-Path ".rescue\unzip\blobs") {
+              Copy-Item -Recurse ".rescue\unzip\blobs" "D:\storage\blobs" -Force
+              Write-Host "restored blobs"
+            }
+          } else { Write-Host "no rescue artifact; starting fresh" }
+
+      - name: Run storage node (keep-alive supervises + hands off)
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/keep-alive.ps1
+          Write-Host "keep-alive exited (handoff completed or cancelled)"
+
+      - name: Snapshot for next rescue
+        if: always()
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/artifact-snapshot.ps1
+
+      - name: Upload rescue artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storaged-rescue
+          path: ${{ runner.temp }}\storaged-rescue.zip
+          retention-days: 90

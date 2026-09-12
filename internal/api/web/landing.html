@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>storaged · Object Storage</title>
+<!--
+  Dashboard UI adapted from jenninexus/dashboard (MIT):
+  https://github.com/jenninexus/dashboard — Aurora theme, profiles/seo.
+  Modified: branding/content + live data injected via #seo-data.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ── Aurora theme tokens ───────────────────────────────────────────── */
+:root {
+  --bg:        #070b14;
+  --bg2:       #0c1220;
+  --surface:   rgba(77,159,255,0.05);
+  --surface2:  rgba(77,159,255,0.09);
+  --border:    rgba(77,159,255,0.14);
+  --border2:   rgba(77,159,255,0.32);
+  --text:      #e8eeff;
+  --dim:       #7a90b8;
+  --dim2:      #3a4a68;
+  --bright:    #ffffff;
+  --primary:     #4d9fff;
+  --primary-rgb: 77,159,255;
+  --secondary:   #00f5d4;
+  --accent:      #9b72ff;
+  --blue:        #60b4ff;
+  --teal:        #1de9c0;
+  --indigo:      #3d4fff;
+  --red:         #ff6b8a;
+  --yellow:      #ffb347;
+  --green:       #39e8a0;
+  --glow:        rgba(77,159,255,0.14);
+  --card-radius: 14px;
+  --blur:        22px;
+  --mono:        'JetBrains Mono','Cascadia Code',monospace;
+  --sans:        'Outfit','Segoe UI',system-ui,sans-serif;
+  --heading:     'Outfit','Segoe UI',system-ui,-apple-system,sans-serif;
+}
+[data-theme="light"] {
+  --bg:       #f0f4fb;
+  --bg2:      #e6ecf7;
+  --surface:  rgba(255,255,255,0.88);
+  --surface2: rgba(255,255,255,0.97);
+  --border:   rgba(30,60,140,0.10);
+  --border2:  rgba(30,60,140,0.20);
+  --text:     #0e1830;
+  --dim:      #5070a8;
+  --dim2:     #a0b0d0;
+  --bright:   #070b14;
+  --glow:     rgba(77,159,255,0.10);
+}
+
+/* ── Reset & base ─────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:15px;
+  line-height:1.55;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* Aurora shimmer background */
+body::before{
+  content:'';
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:0;
+  background:
+    radial-gradient(ellipse 70% 50% at 15% 0%,   rgba(77,159,255,0.10),transparent 65%),
+    radial-gradient(ellipse 55% 45% at 85% 5%,   rgba(0,245,212,0.07),transparent 60%),
+    radial-gradient(ellipse 45% 35% at 50% 20%,  rgba(155,114,255,0.06),transparent 65%),
+    radial-gradient(ellipse 60% 40% at 10% 90%,  rgba(0,245,212,0.05),transparent 55%),
+    radial-gradient(ellipse 50% 45% at 95% 80%,  rgba(77,159,255,0.07),transparent 60%);
+}
+
+/* Subtle scan-line overlay */
+body::after{
+  content:'';
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:0;
+  background:repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+  opacity:.6;
+}
+
+.wrap{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:0 1.6rem 4rem}
+a{color:var(--secondary);text-decoration:none}
+code{font-family:var(--mono);font-size:.84em;color:var(--secondary)}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+.head{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:1rem;
+  padding:1.6rem 0 .8rem;
+}
+.head-left{display:flex;align-items:flex-start;gap:.9rem}
+.head h1{
+  font-family:var(--heading);
+  font-size:1.9rem;
+  font-weight:800;
+  background:linear-gradient(110deg,var(--primary) 0%,var(--secondary) 45%,var(--accent) 100%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  letter-spacing:-.01em;
+  line-height:1.2;
+}
+.head .meta{font-size:.72rem;color:var(--dim);margin-top:.3rem;font-family:var(--mono)}
+.head-right{display:flex;align-items:center;gap:.5rem;flex-shrink:0;padding-top:.2rem}
+.theme-btn{
+  background:transparent;
+  border:1px solid var(--border2);
+  color:var(--dim);
+  border-radius:6px;
+  padding:.28rem .65rem;
+  font-size:.6rem;
+  font-family:var(--mono);
+  cursor:pointer;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  transition:.15s;
+}
+.theme-btn:hover{color:var(--primary);border-color:var(--primary)}
+
+/* ── Tabs ────────────────────────────────────────────────────────────── */
+.tabs{display:flex;gap:.3rem;margin-bottom:1.2rem;border-bottom:1px solid var(--border)}
+.tab{
+  padding:.5rem 1.1rem;
+  font-size:.72rem;
+  font-weight:600;
+  font-family:var(--mono);
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:var(--dim);
+  cursor:pointer;
+  border-bottom:2px solid transparent;
+  margin-bottom:-1px;
+  transition:.15s;
+}
+.tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.tab:hover:not(.active){color:var(--text)}
+
+/* ── KPI Stats bar ───────────────────────────────────────────────────── */
+.stats-bar{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.2rem}
+.kpi{
+  flex:1;min-width:110px;
+  background:var(--surface);
+  backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:.6rem .85rem;
+  text-align:center;
+  position:relative;
+  overflow:hidden;
+}
+.kpi::before{
+  content:'';position:absolute;top:0;left:10%;right:10%;height:1px;
+  background:linear-gradient(90deg,transparent,var(--primary),transparent);
+  opacity:.5;
+}
+.kpi .n{
+  font-size:1.1rem;font-weight:800;
+  color:var(--primary);
+  font-variant-numeric:tabular-nums;
+  font-family:var(--mono);
+}
+.kpi .l{font-size:.57rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-top:.1rem}
+
+/* ── Expand/collapse controls ────────────────────────────────────────── */
+.controls{display:flex;justify-content:flex-end;gap:.35rem;margin-bottom:.85rem}
+.ctrl-btn{
+  padding:4px 11px;
+  font-size:.59rem;font-family:var(--mono);font-weight:600;
+  letter-spacing:.05em;text-transform:uppercase;
+  color:var(--dim);background:transparent;
+  border:1px solid var(--border);border-radius:5px;
+  cursor:pointer;transition:.15s;
+}
+.ctrl-btn:hover{color:var(--primary);border-color:var(--border2)}
+
+/* ── Card ────────────────────────────────────────────────────────────── */
+.card{
+  background:var(--surface);
+  backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);
+  border-radius:var(--card-radius);
+  margin-bottom:1rem;
+  overflow:hidden;
+  position:relative;
+  animation:fadeUp .45s both;
+}
+.card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--card-accent,var(--primary)),transparent);
+  opacity:.75;
+}
+.card:nth-child(1){animation-delay:.04s}
+.card:nth-child(2){animation-delay:.08s}
+.card:nth-child(3){animation-delay:.12s}
+.card:nth-child(4){animation-delay:.16s}
+.card:nth-child(5){animation-delay:.20s}
+.card:nth-child(6){animation-delay:.24s}
+.card:nth-child(7){animation-delay:.28s}
+.card:nth-child(8){animation-delay:.32s}
+.card:nth-child(9){animation-delay:.36s}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+
+.card-head{
+  display:flex;align-items:center;gap:.6rem;
+  padding:.75rem 1rem;
+  cursor:pointer;user-select:none;
+  border-bottom:1px solid transparent;
+  transition:background .15s;
+}
+.card.open .card-head{border-bottom-color:var(--border)}
+.card-head:hover{background:var(--surface2)}
+.card-head h2{
+  font-family:var(--heading);flex:1;
+  font-size:.72rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:.1em;
+  color:var(--bright);
+  display:flex;align-items:center;gap:.5rem;
+}
+.card-head h2::before{
+  content:'';width:3px;height:13px;border-radius:2px;
+  background:linear-gradient(180deg,var(--card-accent,var(--primary)),var(--secondary));
+}
+.card-toggle{font-size:.58rem;color:var(--dim2);transition:transform .2s}
+.card.open .card-toggle{transform:rotate(90deg)}
+.card-body{padding:1rem;display:none}
+.card.open .card-body{display:block}
+
+.badge{
+  font-size:.54rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  padding:.1rem .42rem;border-radius:4px;
+  background:rgba(var(--primary-rgb),.12);color:var(--primary);
+  border:1px solid rgba(var(--primary-rgb),.28);
+}
+.badge.ok{background:rgba(57,232,160,.12);color:var(--green);border-color:rgba(57,232,160,.28)}
+
+/* ── Tables ──────────────────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-size:.74rem}
+th{
+  text-align:left;padding:.45rem .6rem;
+  color:var(--dim);font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;
+  border-bottom:1px solid var(--border);
+}
+td{padding:.48rem .6rem;border-bottom:1px solid rgba(77,159,255,.06);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr.highlight td{background:rgba(77,159,255,.06)}
+
+/* ── Progress bars ───────────────────────────────────────────────────── */
+.pbar-wrap{display:flex;align-items:center;gap:.6rem}
+.pbar-track{flex:1;height:6px;background:var(--bg2);border-radius:4px;overflow:hidden}
+.pbar-fill{height:100%;border-radius:4px;transition:width .6s cubic-bezier(.22,1,.36,1)}
+.pbar-lbl{font-size:.64rem;font-weight:700;color:var(--dim);min-width:2.5rem;text-align:right;font-family:var(--mono)}
+
+/* ── Status gauges ───────────────────────────────────────────────────── */
+.psi-grid{display:flex;gap:1.2rem;flex-wrap:wrap;margin-bottom:1rem}
+.psi-gauge{text-align:center;flex:1;min-width:110px}
+.psi-ring{
+  width:78px;height:78px;border-radius:50%;margin:0 auto .55rem;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.3rem;font-weight:800;font-family:var(--mono);
+  position:relative;
+}
+.psi-ring::before{
+  content:'';position:absolute;inset:4px;border-radius:50%;
+  background:var(--bg2);
+}
+.psi-ring span{position:relative;z-index:1}
+.psi-label{font-size:.62rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+.field-table{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.55rem}
+.field{
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:10px;padding:.65rem .85rem;
+}
+.field .k{font-size:.58rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.field .v{font-size:.85rem;font-weight:700;font-family:var(--mono);margin-top:.15rem;word-break:break-all}
+.field .v.good{color:var(--green)}
+.field .v.warn{color:var(--yellow)}
+.field .v.err{color:var(--red)}
+
+/* ── Checklist ───────────────────────────────────────────────────────── */
+.check-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.4rem}
+.check-item{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.42rem .6rem;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:7px;font-size:.72rem;
+}
+.check-icon{font-size:.78rem;flex-shrink:0}
+.check-pass .check-icon{color:var(--green)}
+.check-warn .check-icon{color:var(--yellow)}
+.check-fail .check-icon{color:var(--red)}
+
+/* ── Milestones ──────────────────────────────────────────────────────── */
+.timeline-scroll{overflow-x:auto;padding-bottom:.5rem}
+.timeline-track{
+  display:flex;align-items:center;gap:0;
+  position:relative;min-width:600px;
+  padding:1.5rem 1rem 1rem;
+}
+.timeline-track::before{
+  content:'';position:absolute;
+  top:calc(1.5rem + 10px);left:1rem;right:1rem;height:2px;
+  border-top:2px dashed var(--border2);
+}
+.milestone{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:.35rem;
+  position:relative;z-index:1;
+}
+.ms-dot{
+  width:18px;height:18px;border-radius:50%;
+  background:var(--primary);
+  border:2px solid var(--bg);
+  box-shadow:0 0 10px rgba(77,159,255,.5);
+  flex-shrink:0;
+}
+.ms-dot.done{background:var(--green);box-shadow:0 0 10px rgba(57,232,160,.5)}
+.ms-chip{
+  font-size:.6rem;font-weight:600;
+  font-family:var(--mono);
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:20px;padding:.2rem .55rem;
+  color:var(--text);text-align:center;white-space:nowrap;
+}
+.ms-date{font-size:.56rem;color:var(--dim);text-align:center}
+
+/* ── API methods ─────────────────────────────────────────────────────── */
+.meth{
+  font-size:.6rem;font-weight:700;
+  padding:.08rem .4rem;border-radius:4px;font-family:var(--mono);
+  background:rgba(var(--primary-rgb),.12);color:var(--primary);
+  border:1px solid rgba(var(--primary-rgb),.28);
+}
+.meth.GET{background:rgba(57,232,160,.12);color:var(--green);border-color:rgba(57,232,160,.3)}
+.meth.POST{background:rgba(255,179,71,.12);color:var(--yellow);border-color:rgba(255,179,71,.3)}
+.meth.PUT{background:rgba(77,159,255,.12);color:var(--blue);border-color:rgba(77,159,255,.3)}
+.meth.DELETE{background:rgba(255,107,138,.12);color:var(--red);border-color:rgba(255,107,138,.3)}
+.api-path{font-family:var(--mono);font-size:.7rem}
+
+/* ── Code block ──────────────────────────────────────────────────────── */
+.code-block{
+  background:var(--bg2);border:1px solid var(--border);
+  border-radius:10px;padding:1rem;font-family:var(--mono);
+  font-size:.74rem;line-height:1.7;overflow-x:auto;color:var(--text);
+}
+.code-block .c{color:var(--dim)}
+.code-block .hl{color:var(--secondary)}
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+.foot{
+  margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
+  font-family:var(--mono);font-size:.64rem;color:var(--dim2);
+  display:grid;gap:.4rem;text-align:center;
+}
+.foot strong{font-family:var(--heading);color:var(--text);font-size:.76rem}
+.foot a{color:var(--primary);opacity:.75}
+.foot a:hover{opacity:1}
+
+/* ── Responsive ──────────────────────────────────────────────────────── */
+@media(max-width:600px){
+  .stats-bar{gap:.35rem}
+  .kpi{min-width:90px}
+  .kpi .n{font-size:.9rem}
+  .psi-grid{justify-content:center}
+}
+@media print{.controls,.theme-btn,.tabs{display:none}.card-body{display:block!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="head">
+    <div class="head-left">
+      <div>
+        <h1>storaged</h1>
+        <div class="meta" id="head-meta">object storage &nbsp;·&nbsp; loading…</div>
+      </div>
+    </div>
+    <div class="head-right">
+      <button class="theme-btn" onclick="toggleTheme()"><span id="themeIcon">☾</span> <span id="themeLabel">Dark</span></button>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('overview',this)">Overview</div>
+    <div class="tab" onclick="switchTab('api',this)">API</div>
+  </div>
+
+  <!-- Overview tab -->
+  <div id="tab-overview">
+
+    <!-- KPI Stats Bar -->
+    <div class="stats-bar" id="stats-bar"></div>
+
+    <div class="controls">
+      <button class="ctrl-btn" onclick="allCards(true)">expand all</button>
+      <button class="ctrl-btn" onclick="allCards(false)">collapse all</button>
+    </div>
+
+    <!-- 1. Live Status -->
+    <div class="card open" id="card-status" style="--card-accent:var(--primary)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Live Status</h2>
+        <span class="badge" id="status-badge">…</span>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="status-body"></div>
+    </div>
+
+    <!-- 2. Buckets -->
+    <div class="card open" id="card-buckets" style="--card-accent:var(--secondary)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Buckets</h2>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="buckets-body"></div>
+    </div>
+
+    <!-- 3. Transfers -->
+    <div class="card open" id="card-transfers" style="--card-accent:var(--yellow)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Transfers</h2>
+        <span class="badge" id="tf-badge">…</span>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="transfers-body"></div>
+    </div>
+
+    <!-- 3. Durability & Hardening -->
+    <div class="card open" id="card-checks" style="--card-accent:var(--green)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Durability &amp; Hardening</h2>
+        <span class="badge ok">enabled</span>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="checks-body"></div>
+    </div>
+
+    <!-- 4. Lifecycle -->
+    <div class="card open" id="card-milestones" style="--card-accent:var(--indigo)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Lifecycle</h2>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="milestones-body"></div>
+    </div>
+
+  </div><!-- /tab-overview -->
+
+  <!-- API tab -->
+  <div id="tab-api" style="display:none">
+    <div class="card open" id="card-endpoints" style="--card-accent:var(--teal)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>REST API</h2>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="endpoints-body"></div>
+    </div>
+
+    <div class="card open" id="card-quickstart" style="--card-accent:var(--accent)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Quickstart</h2>
+        <span class="card-toggle">▸</span>
+      </div>
+      <div class="card-body" id="quickstart-body"></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <strong>storaged — self-hosted object storage</strong>
+    <span>API adapted from <a href="https://github.com/jenninexus/dashboard" target="_blank" rel="noopener">jenninexus/dashboard</a> (MIT) · Aurora theme</span>
+  </div>
+
+</div><!-- /wrap -->
+
+<!-- ── Live data (injected by the daemon at request time) ────────────── -->
+<script id="seo-data" type="application/json">__DASHBOARD__</script>
+
+<script>
+'use strict';
+const D = JSON.parse(document.getElementById('seo-data').textContent);
+const $ = id => document.getElementById(id);
+
+// ── Theme ────────────────────────────────────────────────────────────
+function toggleTheme() {
+  const h = document.documentElement;
+  const isDark = h.getAttribute('data-theme') === 'dark';
+  h.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  $('themeIcon').textContent = isDark ? '☀' : '☾';
+  $('themeLabel').textContent = isDark ? 'Light' : 'Dark';
+  localStorage.setItem('seo-theme', isDark ? 'light' : 'dark');
+}
+if (localStorage.getItem('seo-theme') === 'light') toggleTheme();
+
+// ── Tabs ─────────────────────────────────────────────────────────────
+function switchTab(id, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  $('tab-overview').style.display = id === 'overview' ? '' : 'none';
+  $('tab-api').style.display = id === 'api' ? '' : 'none';
+}
+
+// ── Card collapse ────────────────────────────────────────────────────
+function tog(head) {
+  const card = head.closest('.card');
+  card.classList.toggle('open');
+  saveCards();
+}
+function allCards(open) {
+  document.querySelectorAll('.card').forEach(c => c.classList.toggle('open', open));
+  saveCards();
+}
+function saveCards() {
+  const state = {};
+  document.querySelectorAll('.card[id]').forEach(c => { state[c.id] = c.classList.contains('open'); });
+  localStorage.setItem('stu-cards', JSON.stringify(state));
+}
+function restoreCards() {
+  try {
+    const state = JSON.parse(localStorage.getItem('stu-cards') || '{}');
+    Object.entries(state).forEach(([id, open]) => {
+      const el = $(id);
+      if (el) el.classList.toggle('open', open);
+    });
+  } catch(e) {}
+}
+
+// ── Header ───────────────────────────────────────────────────────────
+$('head-meta').textContent =
+  (D.profile.publicUrl || 'object storage') + ' · ' + (D.profile.node ? 'node ' + D.profile.node : '') + ' · ' + D.profile.asOf;
+
+// ── KPI bar ──────────────────────────────────────────────────────────
+$('stats-bar').innerHTML = D.kpis.map(k =>
+  `<div class="kpi"><div class="n">${k.value}</div><div class="l">${k.label}</div></div>`
+).join('');
+
+// ── Live Status ──────────────────────────────────────────────────────
+(function(){
+  const s = D.status;
+  const badge = $('status-badge');
+  badge.textContent = s.writes ? 'writes: on' : 'read-only';
+  badge.className = 'badge' + (s.writes ? ' ok' : '');
+
+  function gauge(label, score, grade, sub) {
+    const color = grade === 'pass' ? 'var(--green)' : grade === 'warn' ? 'var(--yellow)' : 'var(--red)';
+    const deg = Math.max(0, Math.min(100, score)) / 100 * 360;
+    return `<div class="psi-gauge">
+      <div class="psi-ring" style="background:conic-gradient(${color} ${deg}deg, var(--bg2) ${deg}deg)">
+        <span style="color:${color}">${sub !== undefined ? sub : Math.round(score)}</span>
+      </div>
+      <div class="psi-label">${label}</div>
+    </div>`;
+  }
+
+  const fields = [
+    { k: 'Node',           v: s.node },
+    { k: 'Role',           v: s.role, cls: s.role === 'leader' ? 'good' : 'warn' },
+    { k: 'Started at',     v: s.started },
+    { k: 'Op log LSN',     v: s.lsn },
+    { k: 'Replication',    v: s.watermark !== null ? s.watermark + ' (watermark)' : 'leader (writer)', cls: s.watermark !== null ? 'good' : '' },
+    { k: 'Active uploads', v: s.active, cls: s.active ? 'warn' : 'good' },
+    { k: 'Objects',        v: D.kpis[2] ? D.kpis[2].value : s.objects },
+    { k: 'Blobs on disk',  v: D.kpis[3] ? D.kpis[3].value : s.blobs }
+  ].map(f => `<div class="field"><div class="k">${f.k}</div><div class="v${f.cls ? ' ' + f.cls : ''}">${f.v}</div></div>`).join('');
+
+  $('status-body').innerHTML =
+    `<div class="psi-grid">
+       ${gauge('Write availability', s.writes ? 100 : 30, s.writes ? 'pass' : 'warn', s.writes ? '100' : 'lo')}
+       ${gauge('Replication sync', s.watermark !== null && s.lsn > 0 ? Math.round(s.watermark / s.lsn * 100) : 100, s.watermark !== null ? 'pass' : 'warn', s.watermark !== null && s.lsn > 0 ? Math.round(s.watermark / s.lsn * 100) : 'n/a')}
+     </div>
+     <div class="field-table">${fields}</div>`;
+})();
+
+// ── Buckets ──────────────────────────────────────────────────────────
+(function(){
+  const rows = D.buckets.map(b => {
+    const pct = Math.max(1, Math.round((b.objects / Math.max(1, D.bucketsMax)) * 100));
+    return `<tr>
+      <td><strong>${b.name}</strong> ${b.public ? '<span class="badge ok" style="margin-left:.3rem">public</span>' : '<span class="badge">private</span>'}</td>
+      <td style="font-family:var(--mono);font-weight:700;color:var(--primary)">${b.objects.toLocaleString()}</td>
+      <td style="font-family:var(--mono)">${b.sizeH}</td>
+      <td style="width:42%">
+        <div class="pbar-wrap">
+          <div class="pbar-track"><div class="pbar-fill" style="width:${pct}%;background:var(--secondary)"></div></div>
+          <div class="pbar-lbl">${pct}%</div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="4" style="color:var(--dim)">no buckets yet</td></tr>';
+  $('buckets-body').innerHTML =
+    `<table>
+      <thead><tr><th>Bucket</th><th>Objects</th><th>Size</th><th>Share</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+})();
+
+// ── Transfers ────────────────────────────────────────────────────────
+(function(){
+  const body = $('transfers-body');
+  let tfKey = localStorage.getItem('stu-tf-key') || '';
+  let transfers = D.transfers || [];
+
+  function tfPct(t) {
+    if (t.status === 'done') return 100;
+    if (!t.size) return 0;
+    return Math.min(99, Math.round(t.progress / t.size * 100));
+  }
+  function tfSize(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    let f = n;
+    for (const u of ['KiB','MiB','GiB','TiB']) {
+      f /= 1024;
+      if (f < 1024) return f.toFixed(1) + ' ' + u;
+    }
+    return f.toFixed(1) + ' PiB';
+  }
+  function tfBadge(s) {
+    const m = { queued:'bg', downloading:'bg ok', done:'ok', failed:'err', cancelled:'bg err' };
+    return `<span class="badge ${m[s]||''}">${s}</span>`;
+  }
+  function esc(v) {
+    return String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function render() {
+    const rows = transfers.map(t => {
+      const pct = tfPct(t);
+      const barColor = t.status === 'done' ? 'var(--green)'
+        : (t.status === 'failed' || t.status === 'cancelled') ? 'var(--red)'
+        : 'var(--secondary)';
+      const src = t.url || '';
+      const active = (t.status === 'queued' || t.status === 'downloading');
+      return `<tr>
+        <td style="font-family:var(--mono);font-size:.64rem">${esc(t.id).slice(-12)}</td>
+        <td><strong>${esc(t.bucket)}</strong></td>
+        <td style="font-family:var(--mono);font-size:.72rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(src)}">${esc(t.key)}</td>
+        <td>${tfBadge(t.status)}</td>
+        <td style="font-family:var(--mono);font-size:.68rem">${tfSize(t.progress)}${t.size ? ' / ' + tfSize(t.size) : ''}</td>
+        <td style="width:24%">
+          <div class="pbar-wrap">
+            <div class="pbar-track"><div class="pbar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+            <div class="pbar-lbl">${t.status === 'done' ? '✓' : pct + '%'}</div>
+          </div>
+        </td>
+        <td style="font-size:.6rem;color:var(--dim);font-family:var(--mono)">${esc(t.kind)}</td>
+        <td>${active ? `<button class="ctrl-btn" onclick="tfCancel('${esc(t.bucket)}','${esc(t.id)}')">cancel</button>` : ''}</td>
+        ${t.error ? `<tr><td colspan="8" style="font-size:.64rem;color:var(--red);font-family:var(--mono)">${esc(t.error)}</td></tr>` : ''}
+      </tr>`;
+    }).join('');
+
+    const canWrite = D.status && D.status.writes === true;
+    const bucketOpts = (D.buckets || []).map(b => `<option value="${esc(b.name)}">${esc(b.name)}</option>`).join('');
+
+    const activeCount = transfers.filter(t => t.status === 'queued' || t.status === 'downloading').length;
+    const badge = $('tf-badge');
+    badge.textContent = activeCount ? activeCount + ' active' : 'none';
+    badge.className = 'badge' + (activeCount ? ' ok' : '');
+
+    body.innerHTML = `
+      ${canWrite ? `
+      <div style="margin-bottom:1rem;padding:.85rem;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+        <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap">
+          <div>
+            <label style="display:block;font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">Bucket</label>
+            <select id="tf-bucket" style="font-family:var(--mono);font-size:.72rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.3rem .5rem">
+              ${bucketOpts || '<option value="">(no buckets)</option>'}
+            </select>
+          </div>
+          <div style="flex:1;min-width:240px">
+            <label style="display:block;font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">URL / Magnet URI</label>
+            <input id="tf-url" type="text" placeholder="https://example.com/big.iso   or   magnet:?xt=urn:btih:…" style="width:100%;font-family:var(--mono);font-size:.72rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.3rem .5rem">
+          </div>
+          <div>
+            <label style="display:block;font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">Key (opt)</label>
+            <input id="tf-key" type="text" placeholder="folder/path" style="width:130px;font-family:var(--mono);font-size:.72rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.3rem .5rem">
+          </div>
+          <button class="ctrl-btn" onclick="tfStart()" style="background:rgba(var(--primary-rgb),.15);color:var(--primary);border-color:rgba(var(--primary-rgb),.3)">Start</button>
+        </div>
+        <div style="margin-top:.65rem;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+          <label style="font-size:.62rem;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:.35rem">
+            <input id="tf-file" type="file" accept=".torrent" style="display:none" onchange="tfFileChanged(this)">
+            <span id="tf-file-label" style="border:1px dashed var(--border);border-radius:5px;padding:.15rem .45rem;font-size:.58rem;color:var(--dim)">.torrent file</span>
+          </label>
+          <span id="tf-file-name" style="font-size:.6rem;color:var(--dim);font-family:var(--mono)"></span>
+          <div style="flex:1"></div>
+          <span style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">API key</span>
+          <input id="tf-api-key" type="password" placeholder="admin bearer" value="${esc(tfKey)}" style="width:150px;font-family:var(--mono);font-size:.66rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.25rem .45rem" oninput="tfKeyInput(this.value)">
+        </div>
+      </div>
+      ` : '<div style="margin-bottom:.85rem;padding:.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:7px;font-size:.66rem;color:var(--dim)">read-only mode (follower) — transfers need the writer node</div>'}
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>ID</th><th>Bucket</th><th>Key</th><th>Status</th><th>Progress</th><th>Completion</th><th>Kind</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="8" style="color:var(--dim)">no transfers yet</td></tr>'}</tbody>
+        </table>
+      </div>`;
+  }
+
+  window.tfKeyInput = function(v) {
+    tfKey = v;
+    localStorage.setItem('stu-tf-key', v);
+  };
+
+  window.tfFileChanged = function(el) {
+    const name = el.files && el.files[0] ? el.files[0].name : '';
+    $('tf-file-label').textContent = name || '.torrent file';
+    $('tf-file-name').textContent = name ? 'picked, clears URL field' : '';
+    if (name) $('tf-url').value = '';
+  };
+
+  window.tfStart = async function() {
+    const bucket = $('tf-bucket') ? $('tf-bucket').value : '';
+    if (!bucket) return alert('select a bucket first');
+    const urlEl = $('tf-url');
+    const url = urlEl ? urlEl.value.trim() : '';
+    const fileEl = $('tf-file');
+    const file = fileEl && fileEl.files[0];
+    const keyEl = $('tf-key');
+    const key = keyEl ? keyEl.value.trim() : '';
+    if (!tfKey) return alert('enter an admin API key in the field above');
+
+    const enc = encodeURIComponent;
+    const qs = key ? '?key=' + enc(key) : '';
+    const uri = location.origin + '/v1/buckets/' + enc(bucket) + '/transfers' + qs;
+    const hdrs = { 'Authorization': 'Bearer ' + tfKey };
+    let res;
+
+    try {
+      if (file) {
+        hdrs['Content-Type'] = 'application/x-bittorrent';
+        res = await fetch(uri, { method: 'POST', headers: hdrs, body: file });
+      } else if (url) {
+        hdrs['Content-Type'] = 'application/json';
+        const body = url.startsWith('magnet:') ? { magnet: url } : { url: url };
+        res = await fetch(uri, { method: 'POST', headers: hdrs, body: JSON.stringify(body) });
+      } else {
+        return alert('enter a URL / magnet URI or choose a .torrent file');
+      }
+    } catch (err) {
+      return alert('request failed: ' + err.message);
+    }
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      return alert(e.error || res.statusText);
+    }
+    const d = await res.json();
+    if (d.transfer) transfers.unshift(d.transfer);
+    if (fileEl) fileEl.value = '';
+    if ($('tf-file-label')) $('tf-file-label').textContent = '.torrent file';
+    if ($('tf-file-name')) $('tf-file-name').textContent = '';
+    render();
+  };
+
+  window.tfCancel = async function(bucket, id) {
+    if (!tfKey) return alert('enter an admin API key first');
+    const res = await fetch(location.origin + '/v1/buckets/' + encodeURIComponent(bucket) + '/transfers/' + id, {
+      method: 'DELETE', headers: { 'Authorization': 'Bearer ' + tfKey }
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      return alert(e.error || res.statusText);
+    }
+    const t = transfers.find(x => x.id === id);
+    if (t) t.status = 'cancelled';
+    render();
+  };
+
+  // Live refresh when an API key is stored (read scope suffices).
+  setInterval(async () => {
+    if (!tfKey || !D.buckets || !D.buckets.length) return;
+    try {
+      const all = [];
+      for (const b of D.buckets) {
+        const r = await fetch(location.origin + '/v1/buckets/' + encodeURIComponent(b.name) + '/transfers', {
+          headers: { 'Authorization': 'Bearer ' + tfKey }
+        });
+        if (!r.ok) continue;
+        const d = await r.json();
+        if (d.transfers) all.push(...d.transfers);
+      }
+      transfers = all;
+      render();
+    } catch (e) {}
+  }, 4000);
+
+  render();
+})();
+
+// ── Durability & Hardening ───────────────────────────────────────────
+(function(){
+  const items = D.checks.map(c => {
+    const icon = c.status === 'pass' ? '✓' : c.status === 'warn' ? '⚠' : '✗';
+    return `<div class="check-item check-${c.status}"><span class="check-icon">${icon}</span><span>${c.item}</span></div>`;
+  }).join('');
+  $('checks-body').innerHTML = `<div class="check-grid">${items}</div>`;
+})();
+
+// ── Lifecycle ────────────────────────────────────────────────────────
+(function(){
+  const ms = D.milestones.map(m =>
+    `<div class="milestone">
+      <div class="ms-dot ${m.done ? 'done' : ''}"></div>
+      <div class="ms-chip">${m.label}</div>
+      <div class="ms-date">${m.date}</div>
+    </div>`
+  ).join('');
+  $('milestones-body').innerHTML =
+    `<div class="timeline-scroll"><div class="timeline-track">${ms}</div></div>`;
+})();
+
+// ── Endpoints ────────────────────────────────────────────────────────
+(function(){
+  const rows = D.endpoints.map(e =>
+    `<tr>
+      <td><span class="meth ${e.method}">${e.method}</span></td>
+      <td class="api-path">${e.path}</td>
+      <td style="font-size:.66rem;color:var(--dim)">${e.desc}</td>
+    </tr>`
+  ).join('');
+  $('endpoints-body').innerHTML =
+    `<table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>${rows}</tbody></table>`;
+})();
+
+// ── Quickstart ───────────────────────────────────────────────────────
+$('quickstart-body').innerHTML =
+  `<pre class="code-block">${D.quickstart}</pre>`;
+
+restoreCards();
+</script>
+</body>
+</html>

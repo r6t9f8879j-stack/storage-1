@@ -1,0 +1,19 @@
+# Named-tunnel config for storaged.
+# Routes storage.chuglii.in -> the storaged daemon on the runner.
+#
+# `credentials-file` is resolved relative to this file's directory, so keep
+# it next to tunnel-credentials.json. On the runner both are materialized
+# into $RUNNER_TEMP\cloudflared\.
+#
+# Dedicated storage tunnel (created via `cloudflared tunnel create storage`,
+# uuid f8cde1bb-…). Independent from the `supabase-selfhosted` tunnel on the
+# docker host, so both can run at the same time with no conflict.
+#
+# DNS: CNAME storage.chuglii.in -> f8cde1bb-85e9-44fd-abbd-a652d16fa63f.cfargotunnel.com
+tunnel: f8cde1bb-85e9-44fd-abbd-a652d16fa63f
+credentials-file: tunnel-credentials.json
+
+ingress:
+  - hostname: storage.chuglii.in
+    service: http://127.0.0.1:5000
+  - service: http_status:404

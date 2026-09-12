@@ -1,0 +1,33 @@
+# storaged example configuration. Every value below can be overridden with
+# STORAGED_* environment variables (which win on the runners). Copy to
+# conf/config.toml and fill secrets from your env, or omit this file entirely
+# and rely on env vars.
+
+listen = "127.0.0.1:5000"        # bind loopback; cloudflared fronts this
+public_url = "https://storage.chuglii.in" # external base used by signed URLs
+data_dir = "D:\\storage"          # persistent disk location on the runner
+node_id = "node-a"
+role = "leader"                   # leader | follower
+
+# --- keys (REQUIRED) ---
+# Provide via STORAGED_ADMIN_KEY / STORAGED_READ_KEY / STORAGED_PEER_SECRET
+# on the runners. Never commit real values here.
+admin_key   = "CHANGE_ME_admin_key"
+read_key    = "CHANGE_ME_read_key"
+peer_secret = "CHANGE_ME_peer_secret"
+
+# --- limits ---
+max_body_bytes   = 2147483648   # 2 GiB single PUT cap
+high_water_bytes = 10737418240  # refuse writes below 10 GiB free
+upload_ttl       = "24h"        # stale upload sessions get GC'd after this
+gc_grace         = "24h"        # orphaned blobs younger than this survive GC
+signed_url_ttl   = "5m"         # lifetime of presigned URLs
+rate_per_minute  = 600
+
+# --- replication (follower only) ---
+[peer]
+enabled = false
+url = "http://127.0.0.1:5000"    # leader node address
+key = "CHANGE_ME_peer_secret"    # X-Peer-Secret, same as peer_secret
+poll_interval_seconds = 10
+apply_batch_size = 200
