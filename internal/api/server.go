@@ -140,10 +140,32 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /_internal/blob/{hash}", peerAuth(s, s.handleInternalBlob))
 	mux.Handle("PUT /_internal/lease", peerAuth(s, s.handleInternalLease))
 
-	return logit(httpHandlerFunc(recoverMiddleware(mux)))
+	return logit(httpHandlerFunc(recoverMiddleware(cors(mux))))
 }
 
 // ---- middleware ----
+
+// cors wraps the API so a browser dashboard served from any hostname (tunnel
+// preview URL, CNAME alias, local port forward) can call the same-origin API
+// paths. It reflects the Origin header and short-circuits OPTIONS preflights.
+// Auth is header-based bearer tokens (no cookies), so CSRF is not a concern.
+func cors(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			hdr := w.Header()
+			hdr.Set("Access-Control-Allow-Origin", origin)
+			hdr.Add("Vary", "Origin")
+			hdr.Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
+			hdr.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range, If-None-Match, If-Match, X-Peer-Secret")
+			hdr.Set("Access-Control-Expose-Headers", "ETag, Content-Range, Accept-Ranges, Content-Length")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
 
 // Scope mirrors auth.Scope for routing.
 type Scope = auth.Scope
