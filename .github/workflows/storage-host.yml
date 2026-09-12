@@ -60,8 +60,9 @@ jobs:
           path: |
             ${{ runner.temp }}\go-mod
             ${{ runner.temp }}\go-build
-          key: go-${{ hashFiles('**/go.sum') }}
+          key: go-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
           restore-keys: |
+            go-${{ hashFiles('**/go.sum') }}-
             go-
 
       - name: Build binaries
@@ -72,6 +73,14 @@ jobs:
         run: |
           go build -o "${{ github.workspace }}\cmd\storaged\storaged.exe" ./cmd/storaged
           go build -o "${{ github.workspace }}\cmd\ost\ost.exe" ./cmd/ost
+
+      - name: Save Go cache for next run
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}\go-mod
+            ${{ runner.temp }}\go-build
+          key: go-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
 
       - name: Provision cloudflared (binary + credentials + config)
         shell: pwsh
