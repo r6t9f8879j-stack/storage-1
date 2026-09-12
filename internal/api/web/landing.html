@@ -1014,9 +1014,11 @@ function refreshFiles() {
     <div style="overflow-x:auto"><table id="fb-table"></table></div>
     <span id="fb-pager-frame"></span>`;
   const sel = $('fb-bucket');
-  if (FB.bucket) sel.value = FB.bucket;
+  if (FB.bucket) { sel.value = FB.bucket; }
+  else if (sel && sel.options.length) { FB.bucket = sel.options[0].value; sel.value = FB.bucket; }
   renderCrumbs();
   renderFilesTable();
+  if (FB.bucket && !FB.loading) loadFiles(true);
 }
 
 function changeBucket(name) {
@@ -1152,7 +1154,11 @@ function loadMore() {
 
 async function doUpload() {
   if (!hasCreds()) return toast('sign in or enter an API key first', true);
-  if (!FB.bucket) return toast('select a bucket first', true);
+  if (!FB.bucket) {
+    const first = (myBuckets[0] || D.buckets && D.buckets[0]);
+    if (first) { FB.bucket = first.name; }
+    else return toast('no buckets yet — create one from the Overview tab', true);
+  }
   const fileEl = $('fb-file');
   const file = fileEl && fileEl.files[0];
   if (!file) return toast('choose a file to upload', true);
