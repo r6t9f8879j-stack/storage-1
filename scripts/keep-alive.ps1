@@ -76,14 +76,19 @@ function Start-Tunnel {
     if (-not $cfExe) { $cfExe = (Get-Command cloudflared -ErrorAction SilentlyContinue).Source }
     if (-not $cfExe) { Log "cloudflared not found; tunnel skipped"; return }
 
+    # cloudflared resolves a relative `credentials-file` against its CWD, so
+    # always start it from the directory that holds the config + credentials.
+    $workDir = $null
     $argList = @()
     if ($env:CF_TUNNEL_TOKEN) {
         Log "starting cloudflared (token) tunnel -> $url"
         $argList = @("tunnel","run","--token",$env:CF_TUNNEL_TOKEN)
+        $workDir = if ($env:CLOUDFLARED_DIR) { $env:CLOUDFLARED_DIR } else { $PWD.Path }
     }
     elseif ($env:CLOUDFLARED_CONFIG -and (Test-Path $env:CLOUDFLARED_CONFIG)) {
         Log "starting cloudflared (named tunnel $env:CF_TUNNEL_ID) -> $url via $env:CLOUDFLARED_CONFIG"
         $argList = @("tunnel","--config",$env:CLOUDFLARED_CONFIG,"run")
+        $workDir = Split-Path $env:CLOUDFLARED_CONFIG
     }
     else {
         $cfg = Join-Path $PSScriptRoot "..\conf\cloudflared.yml"
@@ -91,14 +96,16 @@ function Start-Tunnel {
         if ((Test-Path $cfg) -and (Test-Path $creds)) {
             Log "starting cloudflared (named tunnel via conf/) -> $url"
             $argList = @("tunnel","--config",(Resolve-Path $cfg).Path,"run")
+            $workDir = Split-Path $cfg
         } else {
             Log "no tunnel config or token; tunnel skipped"
             return
         }
     }
-    $cfProc = Start-Process -FilePath $cfExe -ArgumentList $argList -WindowStyle Hidden `
-        -RedirectStandardOutput $TunnelOutLog -RedirectStandardError $TunnelErrLog
-    Log "cloudflared started pid=$($cfProc.Id)"
+    if (-not $workDir) { $workDir = $PWD.Path }
+    $cfProc = Start-Process -FilePath $cfExe -ArgumentList $argList -WorkingDirectory $workDir -WindowStyle Hidden `
+            -RedirectStandardOutput $TunnelOutLog -RedirectStandardError $TunnelErrLog
+    Log "cloudflared started pid=$($cfProc.Id) cwd=$workDir"
 }
 function Stop-Tunnel {
     if ($cfProc) { try { Stop-Process -Id $cfProc.Id -Force -ErrorAction SilentlyContinue } catch {} ; $cfProc = $null }
