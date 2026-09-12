@@ -34,7 +34,7 @@ func Run(ctx context.Context, cfgPath string) error {
 	}
 
 	a := auth.New(cfg.AdminKey, cfg.ReadKey, cfg.PeerSecret, cfg.RatePerMinute)
-	a.EnableSupabase(cfg.SupabaseURL, cfg.SupabaseAnonKey)
+	a.EnableSupabase(cfg.SupabaseURL, cfg.SupabaseAnonKey, cfg.SupabaseServiceKey)
 	st := store.New(cfg.DataDir)
 	if err := st.Init(); err != nil {
 		return fmt.Errorf("store: %w", err)

@@ -130,6 +130,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/debug/stats", authz(s, ScopeRead)(s.handleDebugStats))
 	mux.HandleFunc("GET /v1/debug/routes", authz(s, ScopeRead)(s.handleDebugRoutes))
 
+	// account creation / login proxy (public by design, no signup rate limit)
+	mux.HandleFunc("POST /v1/auth/signup", logit(s.handleAuthSignup))
+	mux.HandleFunc("POST /v1/auth/token", logit(s.handleAuthToken))
+
 	mux.Handle("GET /_internal/health", peerAuth(s, s.handleInternalHealth))
 	mux.Handle("GET /_internal/oplog", peerAuth(s, s.handleInternalOplog))
 	mux.Handle("GET /_internal/inventory", peerAuth(s, s.handleInternalInventory))

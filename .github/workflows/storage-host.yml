@@ -145,6 +145,7 @@ jobs:
           STORAGED_BASE: http://127.0.0.1:5000
           STORAGED_SUPABASE_URL: ${{ secrets.STORAGED_SUPABASE_URL }}
           STORAGED_SUPABASE_ANON_KEY: ${{ secrets.STORAGED_SUPABASE_ANON_KEY }}
+          STORAGED_SUPABASE_SERVICE_KEY: ${{ secrets.STORAGED_SUPABASE_SERVICE_KEY }}
         run: |
           powershell -ExecutionPolicy Bypass -File scripts/keep-alive.ps1
           Write-Host "keep-alive exited (handoff completed or cancelled)"

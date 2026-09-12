@@ -169,6 +169,8 @@ func debugRoutes() []string {
 		"GET      /v1/debug/logs",
 		"GET      /v1/debug/stats",
 		"GET      /v1/debug/routes",
+		"POST     /v1/auth/signup",
+		"POST     /v1/auth/token",
 	}
 }
 

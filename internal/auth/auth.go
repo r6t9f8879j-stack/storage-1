@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -40,11 +42,12 @@ type Auth struct {
 
 	// Supabase session validation (dashboard login). Any authenticated
 	// Supabase user is granted admin scope.
-	supabaseOn bool
-	supabaseURL string
-	supabaseAnon string
-	supClient   *http.Client
-	supCache    map[[32]byte]supEntry
+	supabaseOn      bool
+	supabaseURL     string
+	supabaseAnon    string
+	supabaseService string
+	supClient       *http.Client
+	supCache        map[[32]byte]supEntry
 }
 
 type supEntry struct {
@@ -103,15 +106,119 @@ func (a *Auth) Authenticate(bearer string) Scope {
 
 // EnableSupabase turns on dashboard login: bearer tokens that successfully
 // validate against a Supabase project's auth endpoint are granted admin scope.
-func (a *Auth) EnableSupabase(url, anonKey string) {
+// serviceKey (optional) additionally enables account creation and session
+// minting through the /v1/auth/* proxy, which bypasses GoTrue's per-IP
+// signup rate limits.
+func (a *Auth) EnableSupabase(url, anonKey, serviceKey string) {
 	if url == "" || anonKey == "" {
 		return
 	}
 	a.supabaseURL = strings.TrimRight(url, "/")
 	a.supabaseAnon = anonKey
-	a.supClient = &http.Client{Timeout: 5 * time.Second}
+	a.supabaseService = serviceKey
+	a.supClient = &http.Client{Timeout: 10 * time.Second}
 	a.supCache = make(map[[32]byte]supEntry)
 	a.supabaseOn = true
+}
+
+// SupabaseSignup creates a user via the Admin API (service key, auto-confirmed
+// email) so signup is not subject to GoTrue's public per-IP rate limit.
+func (a *Auth) SupabaseSignup(ctx context.Context, email, password string) error {
+	if !a.supabaseOn || a.supabaseService == "" {
+		return fmt.Errorf("account creation is not configured on this node")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"email":         email,
+		"password":      password,
+		"email_confirm": true,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.supabaseURL+"/auth/v1/admin/users", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	a.setServiceHeaders(req)
+	res, err := a.supClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+		return supErr(res.StatusCode, raw)
+	}
+	return nil
+}
+
+// SupabaseToken mints a session for email/password via the password grant
+// using the service key. It bypasses GoTrue's public per-IP login limiting
+// while keeping the secret server-side. The returned map matches the GoTrue
+// /token response plus an expires_at epoch for convenience.
+func (a *Auth) SupabaseToken(ctx context.Context, email, password string) (map[string]any, error) {
+	if !a.supabaseOn || a.supabaseService == "" {
+		return nil, fmt.Errorf("login is not configured on this node")
+	}
+	body, _ := json.Marshal(map[string]any{"email": email, "password": password})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.supabaseURL+"/auth/v1/token?grant_type=password", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	a.setServiceHeaders(req)
+	res, err := a.supClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK {
+		return nil, supErr(res.StatusCode, raw)
+	}
+	var tok map[string]any
+	if err := json.Unmarshal(raw, &tok); err != nil {
+		return nil, fmt.Errorf("bad token response: %v", err)
+	}
+	if tok["access_token"] == nil {
+		return nil, fmt.Errorf("no access_token in response")
+	}
+	if tok["expires_in"] != nil {
+		if secs, ok := tok["expires_in"].(float64); ok {
+			tok["expires_at"] = time.Now().Add(time.Duration(secs) * time.Second).Unix()
+		}
+	}
+	return tok, nil
+}
+
+func (a *Auth) setServiceHeaders(req *http.Request) {
+	req.Header.Set("apikey", a.supabaseService)
+	req.Header.Set("Authorization", "Bearer "+a.supabaseService)
+	req.Header.Set("Content-Type", "application/json")
+}
+
+// supErr extracts a readable message from a GoTrue error response.
+func supErr(code int, raw []byte) error {
+	var e struct {
+		ErrorDescription string `json:"error_description"`
+		Message          string `json:"message"`
+		Error            string `json:"error"`
+		Msg              string `json:"msg"`
+	}
+	_ = json.Unmarshal(raw, &e)
+	msg := firstNonEmpty(e.ErrorDescription, e.Msg, e.Message, e.Error)
+	if msg == "" {
+		msg = strings.TrimSpace(string(raw))
+	}
+	if msg == "" {
+		msg = "unknown error"
+	}
+	return fmt.Errorf("%s (HTTP %d)", msg, code)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // validSupabaseToken validates a session token with Supabase Auth. Verified

@@ -623,8 +623,8 @@ tr.highlight td{background:rgba(77,159,255,.06)}
     <input id="auth-pass" type="password" placeholder="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAuth('in')">
     <div class="auth-err" id="auth-err"></div>
     <div class="auth-row">
-      <button class="ctrl-btn" style="background:rgba(var(--primary-rgb),.15);color:var(--primary);border-color:rgba(var(--primary-rgb),.3)" onclick="doAuth('in')">Sign in</button>
-      <button class="ctrl-btn" onclick="doAuth('up')">Create account</button>
+      <button class="ctrl-btn" style="background:rgba(var(--primary-rgb),.15);color:var(--primary);border-color:rgba(var(--primary-rgb),.3)" onclick="doAuth('in',event)">Sign in</button>
+      <button class="ctrl-btn" onclick="doAuth('up',event)">Create account</button>
     </div>
     <div style="margin-top:.8rem;text-align:center"><a href="#" style="font-size:.66rem;color:var(--dim)" onclick="closeAuthModal();return false">cancel</a></div>
   </div>
@@ -680,33 +680,55 @@ function openAuthModal() {
 }
 function closeAuthModal() { $('auth-modal').classList.remove('open'); }
 window.closeAuthModal = closeAuthModal;
-async function doAuth(mode) {
+async function doAuth(mode, ev) {
   if (!SUPA) return toast('Supabase auth not configured on this node', true);
   const email = ($('auth-email').value || '').trim();
   const pass = $('auth-pass').value || '';
   const errEl = $('auth-err');
   errEl.style.display = 'none';
   if (!email || !pass) { errEl.textContent = 'email and password are required'; errEl.style.display = 'block'; return; }
+  if (pass.length < 6) { errEl.textContent = 'password must be at least 6 characters'; errEl.style.display = 'block'; return; }
+  const btn = ev && ev.target;
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
   try {
-    const { data, error } = mode === 'in'
-      ? await SUPA.auth.signInWithPassword({ email, password: pass })
-      : await SUPA.auth.signUp({ email, password: pass });
-    if (error) throw error;
-    if (data && data.session) {
-      saveSession(data.session);
-      $('auth-pass').value = '';
-      closeAuthModal();
-      toast('signed in as ' + email);
-      loadBuckets();
-      loadFiles(true);
-    } else {
-      errEl.textContent = 'account created — check your email to confirm, then sign in';
-      errEl.style.display = 'block';
-    }
+    const sessionData = mode === 'up'
+      ? await signupViaServer(email, pass)
+      : await loginViaServer(email, pass);
+    saveSession(sessionData);
+    $('auth-pass').value = '';
+    closeAuthModal();
+    toast(mode === 'up' ? 'account created — signed in as ' + email : 'signed in as ' + email);
+    loadBuckets();
+    loadFiles(true);
   } catch (err) {
     errEl.textContent = err.message || String(err);
     errEl.style.display = 'block';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
   }
+}
+async function signupViaServer(email, pass) {
+  const r = await fetch('/v1/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: pass })
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'account creation failed (' + r.status + ')');
+  if (d.session && d.session.access_token) return d.session;
+  throw new Error('Account created but the automatic sign-in returned no session — try signing in');
+}
+async function loginViaServer(email, pass) {
+  const r = await fetch('/v1/auth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: pass })
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'sign in failed (' + r.status + ')');
+  if (!d.session || !d.session.access_token) throw new Error('no session returned');
+  return d.session;
 }
 async function doSignOut() {
   try { if (SUPA) await SUPA.auth.signOut(); } catch(e) {}
