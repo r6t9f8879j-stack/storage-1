@@ -408,6 +408,14 @@ func (s *Server) dashboardPayload(ctx context.Context) (map[string]any, error) {
 		replState = "caught up"
 	}
 
+	supabase := map[string]string{}
+	if s.cfg.SupabaseURL != "" {
+		supabase["url"] = s.cfg.SupabaseURL
+	}
+	if s.cfg.SupabaseAnonKey != "" {
+		supabase["anon"] = s.cfg.SupabaseAnonKey
+	}
+
 	qs := fmt.Sprintf(`# status
 curl -s https://%s/v1/health | jq
 
@@ -433,6 +441,7 @@ curl -s -X POST -H "Authorization: Bearer $K" \
 			"name": "storaged", "node": hp["node_id"], "asOf": time.Now().UTC().Format("Jan 02, 2006"),
 			"publicUrl": site,
 		},
+		"supabase": supabase,
 		"kpis": []map[string]any{
 			{"label": "Disk Free", "value": humanBytes(free), "key": "disk"},
 			{"label": "Buckets", "value": humanCount(int64(len(buckets))), "key": "buckets"},

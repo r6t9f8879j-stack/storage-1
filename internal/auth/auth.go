@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,7 +37,21 @@ type Auth struct {
 
 	mu     sync.Mutex
 	buckets map[string]*bucket
+
+	// Supabase session validation (dashboard login). Any authenticated
+	// Supabase user is granted admin scope.
+	supabaseOn bool
+	supabaseURL string
+	supabaseAnon string
+	supClient   *http.Client
+	supCache    map[[32]byte]supEntry
 }
+
+type supEntry struct {
+	exp time.Time
+}
+
+const supTTL = 10 * time.Minute
 
 type bucket struct {
 	tokens float64
@@ -80,7 +95,84 @@ func (a *Auth) Authenticate(bearer string) Scope {
 	if validBearer(bearer, a.readHash) {
 		return ScopeRead
 	}
+	if a.supabaseOn && a.validSupabaseToken(bearer) {
+		return ScopeAdmin
+	}
 	return ScopeNone
+}
+
+// EnableSupabase turns on dashboard login: bearer tokens that successfully
+// validate against a Supabase project's auth endpoint are granted admin scope.
+func (a *Auth) EnableSupabase(url, anonKey string) {
+	if url == "" || anonKey == "" {
+		return
+	}
+	a.supabaseURL = strings.TrimRight(url, "/")
+	a.supabaseAnon = anonKey
+	a.supClient = &http.Client{Timeout: 5 * time.Second}
+	a.supCache = make(map[[32]byte]supEntry)
+	a.supabaseOn = true
+}
+
+// validSupabaseToken validates a session token with Supabase Auth. Verified
+// tokens are cached until the JWT exp (capped at supTTL) so per-request API
+// calls don't hammer the Supabase edge.
+func (a *Auth) validSupabaseToken(token string) bool {
+	h := sha256.Sum256([]byte(token))
+	a.mu.Lock()
+	if e, ok := a.supCache[h]; ok {
+		a.mu.Unlock()
+		return time.Now().Before(e.exp)
+	}
+	a.mu.Unlock()
+
+	req, err := http.NewRequest(http.MethodGet, a.supabaseURL+"/auth/v1/user", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("apikey", a.supabaseAnon)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := a.supClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	io.Copy(io.Discard, res.Body)
+	if res.StatusCode != http.StatusOK {
+		return false
+	}
+
+	ttl := supTTL
+	if exp := jwtExp(token); exp > 0 {
+		if until := time.Until(time.Unix(exp, 0)); until < time.Minute {
+			return false
+		} else if until < ttl {
+			ttl = until
+		}
+	}
+	a.mu.Lock()
+	a.supCache[h] = supEntry{exp: time.Now().Add(ttl)}
+	a.mu.Unlock()
+	return true
+}
+
+// jwtExp reads the exp claim from a JWT's payload segment (best effort).
+func jwtExp(token string) int64 {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return 0
+	}
+	var c struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &c) != nil {
+		return 0
+	}
+	return c.Exp
 }
 
 // IsPeerSecret reports whether the presented string equals the peer secret.

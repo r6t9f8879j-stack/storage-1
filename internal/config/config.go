@@ -32,6 +32,9 @@ type Config struct {
 	ReadKey          string     `toml:"read_key"`
 	PeerSecret       string     `toml:"peer_secret"`
 
+	SupabaseURL      string     `toml:"supabase_url"`
+	SupabaseAnonKey  string     `toml:"supabase_anon_key"`
+
 	MaxBodyBytes     int64      `toml:"max_body_bytes"`
 	HighWaterBytes   int64      `toml:"high_water_bytes"`
 	UploadTTLStr     string     `toml:"upload_ttl"`
@@ -100,6 +103,8 @@ func (c *Config) applyEnv() {
 	str("STORAGED_ADMIN_KEY", &c.AdminKey)
 	str("STORAGED_READ_KEY", &c.ReadKey)
 	str("STORAGED_PEER_SECRET", &c.PeerSecret)
+	str("STORAGED_SUPABASE_URL", &c.SupabaseURL)
+	str("STORAGED_SUPABASE_ANON_KEY", &c.SupabaseAnonKey)
 	str("STORAGED_PEER_URL", &c.Peer.URL)
 	str("STORAGED_PEER_KEY", &c.Peer.Key)
 	intEnv := func(key string, dst *int) {

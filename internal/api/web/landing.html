@@ -12,6 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 /* ── Aurora theme tokens ───────────────────────────────────────────── */
 :root {
@@ -412,6 +413,20 @@ tr.highlight td{background:rgba(77,159,255,.06)}
 }
 .toast.show{display:block;animation:fadeUp .25s both}
 
+/* ── Auth modal ──────────────────────────────────────────────────────── */
+#auth-modal{position:fixed;inset:0;z-index:90;display:none;align-items:center;justify-content:center;padding:1.2rem;background:rgba(0,0,0,.7)}
+#auth-modal.open{display:flex}
+.auth-box{width:min(92vw,380px);background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:1.4rem;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.auth-box h2{font-size:1rem;margin-bottom:.3rem}
+.auth-box .sub{font-size:.66rem;color:var(--dim);margin-bottom:1rem}
+.auth-box input{width:100%;font-family:var(--mono);font-size:.78rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:.55rem .6rem;margin-bottom:.6rem}
+.auth-box input:focus{border-color:var(--border2);outline:none}
+.auth-err{display:none;font-size:.68rem;color:var(--red);margin-bottom:.6rem}
+.auth-row{display:flex;gap:.5rem;margin-top:.3rem}
+.auth-row button{flex:1}
+.auth-user{font-family:var(--mono);font-size:.64rem;color:var(--secondary)}
+#auth-btn{white-space:nowrap}
+
 /* ── Footer ──────────────────────────────────────────────────────────── */
 .foot{
   margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
@@ -445,6 +460,8 @@ tr.highlight td{background:rgba(77,159,255,.06)}
       </div>
     </div>
     <div class="head-right">
+      <span class="auth-user" id="auth-user"></span>
+      <button class="ctrl-btn" id="auth-btn" onclick="toggleAuth()">Sign in</button>
       <button class="theme-btn" onclick="toggleTheme()"><span id="themeIcon">☾</span> <span id="themeLabel">Dark</span></button>
     </div>
   </div>
@@ -568,6 +585,22 @@ tr.highlight td{background:rgba(77,159,255,.06)}
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Auth (Supabase) modal -->
+<div id="auth-modal">
+  <div class="auth-box">
+    <h2>Sign in to manage</h2>
+    <div class="sub">storaged uses Supabase Auth for dashboard users. Reads stay public; signed-in users get admin.</div>
+    <input id="auth-email" type="email" placeholder="email" autocomplete="email">
+    <input id="auth-pass" type="password" placeholder="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAuth('in')">
+    <div class="auth-err" id="auth-err"></div>
+    <div class="auth-row">
+      <button class="ctrl-btn" style="background:rgba(var(--primary-rgb),.15);color:var(--primary);border-color:rgba(var(--primary-rgb),.3)" onclick="doAuth('in')">Sign in</button>
+      <button class="ctrl-btn" onclick="doAuth('up')">Create account</button>
+    </div>
+    <div style="margin-top:.8rem;text-align:center"><a href="#" style="font-size:.66rem;color:var(--dim)" onclick="closeAuthModal();return false">cancel</a></div>
+  </div>
+</div>
+
 <!-- ── Live data (injected by the daemon at request time) ────────────── -->
 <script id="seo-data" type="application/json">__DASHBOARD__</script>
 
@@ -575,6 +608,93 @@ tr.highlight td{background:rgba(77,159,255,.06)}
 'use strict';
 const D = JSON.parse(document.getElementById('seo-data').textContent);
 const $ = id => document.getElementById(id);
+
+// ── Supabase session (dashboard login) ────────────────────────────────
+const SUPA = (D.supabase && D.supabase.url && D.supabase.anon && window.supabase)
+  ? window.supabase.createClient(D.supabase.url, D.supabase.anon)
+  : null;
+let session = null;
+function loadSession() {
+  try { session = JSON.parse(localStorage.getItem('stu-session') || 'null'); } catch(e) { session = null; }
+}
+function saveSession(s) {
+  session = s;
+  localStorage.setItem('stu-session', s ? JSON.stringify(s) : '');
+  renderAuthUI();
+}
+function hasCreds() { return !!(session && session.access_token) || !!apiKey(); }
+function currentToken() {
+  if (session && session.access_token) return session.access_token;
+  return apiKey();
+}
+function renderAuthUI() {
+  const btn = $('auth-btn');
+  const user = $('auth-user');
+  if (!btn) return;
+  if (session && session.user && session.user.email) {
+    btn.textContent = 'Sign out';
+    user.textContent = 'usr: ' + session.user.email;
+  } else {
+    btn.textContent = 'Sign in';
+    user.textContent = '';
+  }
+}
+function toggleAuth() {
+  if (session && session.access_token) { doSignOut(); return; }
+  openAuthModal();
+}
+function openAuthModal() {
+  if (!SUPA) return toast('Supabase auth not configured on this node', true);
+  $('auth-err').style.display = 'none';
+  $('auth-modal').classList.add('open');
+  $('auth-email').focus();
+}
+function closeAuthModal() { $('auth-modal').classList.remove('open'); }
+window.closeAuthModal = closeAuthModal;
+async function doAuth(mode) {
+  if (!SUPA) return toast('Supabase auth not configured on this node', true);
+  const email = ($('auth-email').value || '').trim();
+  const pass = $('auth-pass').value || '';
+  const errEl = $('auth-err');
+  errEl.style.display = 'none';
+  if (!email || !pass) { errEl.textContent = 'email and password are required'; errEl.style.display = 'block'; return; }
+  try {
+    const { data, error } = mode === 'in'
+      ? await SUPA.auth.signInWithPassword({ email, password: pass })
+      : await SUPA.auth.signUp({ email, password: pass });
+    if (error) throw error;
+    if (data && data.session) {
+      saveSession(data.session);
+      $('auth-pass').value = '';
+      closeAuthModal();
+      toast('signed in as ' + email);
+      loadBuckets();
+      loadFiles(true);
+    } else {
+      errEl.textContent = 'account created — check your email to confirm, then sign in';
+      errEl.style.display = 'block';
+    }
+  } catch (err) {
+    errEl.textContent = err.message || String(err);
+    errEl.style.display = 'block';
+  }
+}
+async function doSignOut() {
+  try { if (SUPA) await SUPA.auth.signOut(); } catch(e) {}
+  saveSession(null);
+  toast('signed out');
+}
+async function restoreSession() {
+  if (!SUPA || !session) { renderAuthUI(); return; }
+  try {
+    const { data, error } = await SUPA.auth.setSession({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token
+    });
+    if (error || !data.session) saveSession(null);
+    else saveSession(data.session);
+  } catch(e) { saveSession(null); }
+}
 
 // ── Theme ────────────────────────────────────────────────────────────
 function toggleTheme() {
@@ -663,13 +783,14 @@ function setApiKey(v) {
 }
 function hdrs(extra) {
   const h = Object.assign({}, extra);
-  const k = apiKey();
+  const k = currentToken();
   if (k) h['Authorization'] = 'Bearer ' + k;
   return h;
 }
 async function apiFetch(path, opts) {
   const res = await fetch(location.origin + path, Object.assign({}, opts, { headers: hdrs(opts && opts.headers) }));
   if (!res.ok) {
+    if (res.status === 401 && SUPA) openAuthModal();
     let msg = res.statusText;
     try { const e = await res.json(); if (e.error) msg = e.error; } catch(err) {}
     const err = new Error(msg);
@@ -741,17 +862,23 @@ function renderBuckets() {
       </td>
       <td style="text-align:right;white-space:nowrap">
         <button class="ctrl-btn" onclick="openBucket('${esc(b.name)}')">open</button>
-        ${k ? `<button class="ctrl-btn" onclick="deleteBucket('${esc(b.name)}')">delete</button>` : ''}
+        ${hasCreds() ? `<button class="ctrl-btn" onclick="deleteBucket('${esc(b.name)}')">delete</button>` : ''}
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="5" style="color:var(--dim)">no buckets yet — create one below</td></tr>';
 
+  const authChip = SUPA
+    ? (session && session.user && session.user.email
+        ? `<span class="auth-user" style="margin-right:.4rem">usr: ${esc(session.user.email)}</span>`
+        : `<button class="ctrl-btn" onclick="openAuthModal()">sign in to manage</button>`)
+    : '';
   $('buckets-body').innerHTML = `
-    <div class="toolbar">
+    <div class="toolbar" style="align-items:center">
+      ${authChip}
       <span class="tb-label">API key</span>
-      <input id="admin-key" type="password" placeholder="admin bearer (create / delete buckets)" value="${esc(k)}"
-             data-key-sync style="flex:1;min-width:220px"
-             oninput="setApiKey(this.value)">
+      <input id="admin-key" type="password" placeholder="optional bearer key (CLI/SDK)" value="${esc(k)}"
+             data-key-sync style="flex:1;min-width:180px"
+             oninput="setApiKey(this.value)" title="Advanced: paste the admin/read bearer key instead of signing in">
     </div>
     <div class="toolbar">
       <span class="tb-label">New bucket</span>
@@ -777,7 +904,7 @@ async function apiBuckets() {
 }
 
 async function loadBuckets() {
-  const k = apiKey();
+  const k = currentToken();
   if (!k) { myBuckets = D.buckets || []; renderBuckets(); return; }
   try {
     const buck = await apiBuckets();
@@ -790,8 +917,7 @@ async function loadBuckets() {
 }
 
 async function createBucket() {
-  const k = apiKey();
-  if (!k) return toast('enter an admin API key first', true);
+  if (!hasCreds()) return toast('sign in or enter an API key first', true);
   const nameEl = $('new-bucket-name');
   const name = (nameEl.value || '').trim();
   if (!name) return toast('enter a bucket name', true);
@@ -834,7 +960,7 @@ function openBucket(name) {
 }
 
 renderBuckets();
-if (apiKey()) loadBuckets();
+if (hasCreds() || SUPA) loadBuckets();
 
 // ── Files / Objects browser ──────────────────────────────────────────
 const FB = {
@@ -860,13 +986,13 @@ function isPublicBucket() { return !!bucketPublic[FB.bucket]; }
 
 function refreshFiles() {
   const wrap = $('files-body');
-  const k = apiKey();
+  const k = currentToken();
   const opts = (D.buckets || []).concat(myBuckets.filter(b => !(D.buckets || []).some(x => x.name === b.name)))
     .map(b => `<option value="${esc(b.name)}">${esc(b.name)}</option>`).join('');
   if (!k) {
-    wrap.innerHTML = `<div style="padding:.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:7px;font-size:.66rem;color:var(--dim)">enter an API key (read or admin) to browse objects — use the field in the Buckets card or below</div>
+    wrap.innerHTML = `<div style="padding:.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:7px;font-size:.66rem;color:var(--dim)">sign in (or enter an API key) to browse objects</div>
       <div class="toolbar" style="margin-top:.6rem"><span class="tb-label">API key</span>
-        <input data-key-sync type="password" placeholder="bearer key" style="flex:1;min-width:220px" value="${esc(k)}" oninput="setApiKey(this.value)"></div>`;
+        <input data-key-sync type="password" placeholder="optional bearer key" style="flex:1;min-width:220px" value="${esc(apiKey())}" oninput="setApiKey(this.value)"></div>`;
     return;
   }
   wrap.innerHTML = `
@@ -967,7 +1093,7 @@ function kindOf(e) {
 function renderFilesTable() {
   const tbl = $('fb-table');
   if (!tbl) return;
-  const k = apiKey();
+  const k = hasCreds();
   let rows = '';
   FB.folders.forEach(f => {
     rows += `<tr>
@@ -1025,8 +1151,7 @@ function loadMore() {
 }
 
 async function doUpload() {
-  const k = apiKey();
-  if (!k) return toast('enter an admin API key first', true);
+  if (!hasCreds()) return toast('sign in or enter an API key first', true);
   if (!FB.bucket) return toast('select a bucket first', true);
   const fileEl = $('fb-file');
   const file = fileEl && fileEl.files[0];
@@ -1239,7 +1364,7 @@ async function deleteEntry(i) {
     const file = fileEl && fileEl.files[0];
     const keyEl = $('tf-key');
     const key = keyEl ? keyEl.value.trim() : '';
-    if (!apiKey()) return alert('enter an admin API key in the field above');
+    if (!hasCreds()) return alert('sign in or enter an API key above');
 
     const enc = encodeURIComponent;
     const qs = key ? '?key=' + enc(key) : '';
@@ -1274,7 +1399,7 @@ async function deleteEntry(i) {
   };
 
   window.tfCancel = async function(bucket, id) {
-    if (!apiKey()) return alert('enter an admin API key first');
+    if (!hasCreds()) return alert('sign in or enter an API key first');
     const res = await fetch(location.origin + '/v1/buckets/' + encodeURIComponent(bucket) + '/transfers/' + id, {
       method: 'DELETE', headers: hdrs({})
     });
@@ -1289,7 +1414,7 @@ async function deleteEntry(i) {
 
   // Live refresh when an API key is stored (read scope suffices).
   setInterval(async () => {
-    if (!apiKey() || !D.buckets || !D.buckets.length) return;
+    if (!hasCreds() || !D.buckets || !D.buckets.length) return;
     try {
       const all = [];
       for (const b of D.buckets) {
@@ -1348,6 +1473,14 @@ $('quickstart-body').innerHTML =
   `<pre class="code-block">${D.quickstart}</pre>`;
 
 restoreCards();
+
+// ── Boot: restore Supabase session if present ─────────────────────────
+loadSession();
+renderAuthUI();
+restoreSession().then(() => {
+  renderAuthUI();
+  if (hasCreds()) { loadBuckets(); if ($('tab-files')) renderFilesTable(); }
+});
 </script>
 </body>
 </html>
