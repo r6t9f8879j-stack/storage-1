@@ -43,9 +43,6 @@ jobs:
       CF_TUNNEL_ID: f8cde1bb-85e9-44fd-abbd-a652d16fa63f
       CF_TUNNEL_DOMAIN: storage.chuglii.in
       CF_TUNNEL_CREDENTIALS: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
-      CLOUDFLARED_DIR: ${{ runner.temp }}\cloudflared
-      CLOUDFLARED_CONFIG: ${{ runner.temp }}\cloudflared\cloudflared.yml
-      CLOUDFLARED_EXE: ${{ runner.temp }}\cloudflared\cloudflared.exe
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       WORKFLOW_SELF: storage-host.yml
@@ -65,6 +62,10 @@ jobs:
 
       - name: Provision cloudflared (binary + credentials + config)
         shell: pwsh
+        env:
+          CLOUDFLARED_DIR: ${{ runner.temp }}\cloudflared
+          CLOUDFLARED_CONFIG: ${{ runner.temp }}\cloudflared\cloudflared.yml
+          CLOUDFLARED_EXE: ${{ runner.temp }}\cloudflared\cloudflared.exe
         run: |
           New-Item -ItemType Directory -Force -Path "$env:CLOUDFLARED_DIR" | Out-Null
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" `
@@ -115,6 +116,11 @@ jobs:
 
       - name: Run storage node (keep-alive supervises + hands off)
         shell: powershell
+        env:
+          CLOUDFLARED_EXE: ${{ runner.temp }}\cloudflared\cloudflared.exe
+          CLOUDFLARED_CONFIG: ${{ runner.temp }}\cloudflared\cloudflared.yml
+          STORAGED_EXE: ${{ github.workspace }}\cmd\storaged\storaged.exe
+          STORAGED_BASE: http://127.0.0.1:5000
         run: |
           powershell -ExecutionPolicy Bypass -File scripts/keep-alive.ps1
           Write-Host "keep-alive exited (handoff completed or cancelled)"
