@@ -520,6 +520,17 @@ func (c *Client) CancelTransfer(ctx context.Context, bucket, id string) error {
 	return nil
 }
 
+// RetryTransfer re-queues a failed or cancelled transfer. Torrents keep their
+// staged pieces, so a retry resumes from where it stopped.
+func (c *Client) RetryTransfer(ctx context.Context, bucket, id string) (*Transfer, error) {
+	var out TransferResult
+	p := "/v1/buckets/" + url.PathEscape(bucket) + "/transfers/" + url.PathEscape(id) + "/retry"
+	if _, err := c.do(ctx, "POST", p, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out.Transfer, nil
+}
+
 // ---- trash (soft delete) ----
 
 type TrashEntry struct {

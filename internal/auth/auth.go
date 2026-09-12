@@ -122,6 +122,10 @@ func (a *Auth) EnableSupabase(url, anonKey, serviceKey string) {
 	a.supabaseOn = true
 }
 
+// SupabaseEnabled reports whether this node validates dashboard (Supabase)
+// sessions in addition to the static bearer keys.
+func (a *Auth) SupabaseEnabled() bool { return a.supabaseOn }
+
 // SupabaseSignup creates a user via the Admin API (service key, auto-confirmed
 // email) so signup is not subject to GoTrue's public per-IP rate limit.
 func (a *Auth) SupabaseSignup(ctx context.Context, email, password string) error {

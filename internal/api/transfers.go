@@ -47,7 +47,7 @@ func (s *Server) handleCreateTransfer(w http.ResponseWriter, r *http.Request) {
 		// raw .torrent upload
 		id, err = s.createRawTorrent(r, b, data)
 	case len(data) > 0:
-		id, err = s.createJSONTransfer(b, data)
+		id, err = s.createJSONTransfer(b, data, r.URL.Query().Get("key"))
 	default:
 		writeJSON(w, 400, E{"error": "empty body"})
 		return
@@ -89,8 +89,10 @@ func (s *Server) createRawTorrent(r *http.Request, bucket string, data []byte) (
 }
 
 // createJSONTransfer handles {"url":...} (put.io URL fetch) and
-// {"magnet":...} (BitTorrent download) payloads.
-func (s *Server) createJSONTransfer(bucket string, data []byte) (string, error) {
+// {"magnet":...} (BitTorrent download) payloads. queryKey is the optional
+// ?key= object key; it is used when the JSON body carries no "key" (the
+// dashboard sends the key as a query param).
+func (s *Server) createJSONTransfer(bucket string, data []byte, queryKey string) (string, error) {
 	var body struct {
 		URL         string `json:"url"`
 		Magnet      string `json:"magnet"`
@@ -100,8 +102,12 @@ func (s *Server) createJSONTransfer(bucket string, data []byte) (string, error) 
 	if err := json.Unmarshal(data, &body); err != nil {
 		return "", meta.ErrInvalidF("invalid JSON body: %v", err)
 	}
+	queryKey = strings.TrimSpace(queryKey)
 	if m := strings.TrimSpace(body.Magnet); m != "" && strings.HasPrefix(m, "magnet:?") {
-		key := body.Key
+		key := strings.TrimSpace(body.Key)
+		if key == "" {
+			key = queryKey
+		}
 		if key == "" {
 			key = magnetKey(m)
 		}
@@ -118,7 +124,10 @@ func (s *Server) createJSONTransfer(bucket string, data []byte) (string, error) 
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", meta.ErrInvalidF("url must be an http(s) URL")
 	}
-	key := body.Key
+	key := strings.TrimSpace(body.Key)
+	if key == "" {
+		key = queryKey
+	}
 	if key == "" {
 		key = keyFromURL(u)
 	}
@@ -169,6 +178,38 @@ func (s *Server) handleCancelTransfer(w http.ResponseWriter, r *http.Request) {
 		_ = s.meta.SetTransferStatus(id, transfer.StatusCancelled, "cancelled by user")
 	}
 	w.WriteHeader(204)
+}
+
+// handleRetryTransfer re-queues a failed/cancelled transfer. Torrent staging is
+// kept on failure, so a retried torrent resumes from the pieces already on disk.
+func (s *Server) handleRetryTransfer(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, err := s.meta.GetTransfer(id)
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	if t.Bucket != r.PathValue("b") || t.Bucket == "" {
+		writeJSON(w, 404, E{"error": "transfer not found"})
+		return
+	}
+	if ce := s.checkWrite(); ce != nil {
+		s.handleErr(w, ce)
+		return
+	}
+	if err := s.meta.RetryTransfer(id); err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	if s.tf != nil {
+		s.tf.Notify()
+	}
+	t, err = s.meta.GetTransfer(id)
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	writeJSON(w, 200, E{"transfer": t})
 }
 
 // keyFromURL derives an object key from a URL's final path segment.

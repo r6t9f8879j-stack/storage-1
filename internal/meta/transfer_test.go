@@ -3,6 +3,7 @@ package meta
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,55 @@ func TestTransferLifecycle(t *testing.T) {
 	tf, _ = m.GetTransfer(id)
 	if tf.Status != "failed" || !strings.Contains(tf.Error, "boom") {
 		t.Errorf("status = %q error = %q, want failed/boom", tf.Status, tf.Error)
+	}
+}
+
+func TestRetryTransfer(t *testing.T) {
+	m := newTestMeta(t)
+	if err := m.PutBucket("rtx", false); err != nil {
+		t.Fatal(err)
+	}
+	id, err := m.CreateTransfer("rtx", "k", "http://a.test/x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetTransferStatus(id, "downloading", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UpdateTransferProgress(id, 900, 4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetTransferStatus(id, "failed", "stalled for 5m0s"); err != nil {
+		t.Fatal(err)
+	}
+
+	// a queued (still running) transfer is not retryable
+	if err := m.SetTransferStatus(id, "queued", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RetryTransfer(id); !errors.Is(err, ErrInvalid) {
+		t.Errorf("retry of a queued transfer: err = %v, want ErrInvalid", err)
+	}
+
+	if err := m.SetTransferStatus(id, "failed", "stalled for 5m0s"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RetryTransfer(id); err != nil {
+		t.Fatalf("RetryTransfer: %v", err)
+	}
+	tf, err := m.GetTransfer(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tf.Status != "queued" || tf.Error != "" {
+		t.Errorf("after retry: status = %q error = %q, want queued/empty", tf.Status, tf.Error)
+	}
+	// progress survives so a resumed torrent reports where it left off
+	if tf.Progress != 900 {
+		t.Errorf("progress after retry = %d, want 900", tf.Progress)
+	}
+	if err := m.RetryTransfer("nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("retry of a missing transfer: err = %v, want ErrNotFound", err)
 	}
 }
 

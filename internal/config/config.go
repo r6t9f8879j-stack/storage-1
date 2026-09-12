@@ -44,6 +44,12 @@ type Config struct {
 
 	RatePerMinute    int        `toml:"rate_per_minute"`
 
+	// TorrentTrackers are announce URLs added to magnet links that carry none
+	// of their own (most public magnets list no trackers, which would leave
+	// peer discovery to DHT alone). Env: STORAGED_TORRENT_TRACKERS (comma
+	// separated); set it to a single comma to disable.
+	TorrentTrackers  []string   `toml:"torrent_trackers"`
+
 	Peer             PeerConfig `toml:"peer"`
 
 	uploadTTL        time.Duration
@@ -87,6 +93,18 @@ func defaults() *Config {
 		GCGraceStr:      "24h",
 		SignedURLTTLStr: "5m",
 		RatePerMinute:  600,
+		TorrentTrackers: defaultTorrentTrackers(),
+	}
+}
+
+// defaultTorrentTrackers is a small set of long-lived public trackers, used
+// only when a magnet link lists none of their own.
+func defaultTorrentTrackers() []string {
+	return []string{
+		"udp://tracker.opentrackr.org:1337/announce",
+		"udp://open.tracker.cl:1337/announce",
+		"udp://tracker.openbittorrent.com:6969/announce",
+		"udp://exodus.desync.com:6969/announce",
 	}
 }
 
@@ -117,6 +135,15 @@ func (c *Config) applyEnv() {
 		}
 	}
 	intEnv("STORAGED_RATE_PER_MINUTE", &c.RatePerMinute)
+	if v, ok := os.LookupEnv("STORAGED_TORRENT_TRACKERS"); ok {
+		var list []string
+		for _, part := range strings.Split(v, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				list = append(list, part)
+			}
+		}
+		c.TorrentTrackers = list
+	}
 	if v, ok := os.LookupEnv("STORAGED_MAX_BODY_BYTES"); ok && v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			c.MaxBodyBytes = n

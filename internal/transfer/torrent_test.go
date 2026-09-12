@@ -1,6 +1,10 @@
 package transfer
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/anacrolix/torrent"
+)
 
 func TestSanitizeName(t *testing.T) {
 	cases := []struct {
@@ -21,6 +25,40 @@ func TestSanitizeName(t *testing.T) {
 		if got := sanitizeName(c.in); got != c.want {
 			t.Errorf("sanitizeName(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestAddFallbackTrackers(t *testing.T) {
+	fallback := []string{"udp://tracker.example:1337/announce"}
+
+	// a magnet with no trackers of its own gets the configured fallbacks
+	spec, err := torrent.TorrentSpecFromMagnetUri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatalf("parse magnet: %v", err)
+	}
+	addFallbackTrackers(spec, fallback)
+	if got := trackerCount(spec); got != len(fallback) {
+		t.Errorf("tracker count = %d, want %d", got, len(fallback))
+	}
+
+	// a magnet that already has trackers is left alone
+	spec, err = torrent.TorrentSpecFromMagnetUri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=udp%3A%2F%2Fown.example%3A80")
+	if err != nil {
+		t.Fatalf("parse magnet: %v", err)
+	}
+	addFallbackTrackers(spec, fallback)
+	if got := trackerCount(spec); got != 1 {
+		t.Errorf("tracker count = %d, want the magnet's own 1", got)
+	}
+
+	// disabling (empty list) is a no-op
+	spec, err = torrent.TorrentSpecFromMagnetUri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatalf("parse magnet: %v", err)
+	}
+	addFallbackTrackers(spec, nil)
+	if got := trackerCount(spec); got != 0 {
+		t.Errorf("tracker count = %d, want 0", got)
 	}
 }
 

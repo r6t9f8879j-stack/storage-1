@@ -102,6 +102,7 @@ Auth: `Authorization: Bearer <admin|read key>` unless noted.
 | `POST /v1/buckets/{b}/transfers` | queue a remote URL / magnet / `.torrent` fetch |
 | `GET /v1/buckets/{b}/transfers` · `GET /v1/transfers/{id}` | transfer status / progress |
 | `DELETE /v1/buckets/{b}/transfers/{id}` | cancel a queued/running transfer |
+| `POST /v1/buckets/{b}/transfers/{id}/retry` | re-queue a failed/cancelled transfer (torrents resume) |
 | `GET /v1/trash` | list trashed objects |
 | `POST /v1/trash/restore` · `POST /v1/trash/purge` | restore one / permanently delete one |
 | `DELETE /v1/trash` | purge everything in the trash |
@@ -126,6 +127,7 @@ go run ./cmd/ost trash purge media photos/first.jpg   # permanent
 go run ./cmd/ost trash purge-all
 go run ./cmd/ost transfer media https://example.com/big.iso --key=videos/big.iso
 go run ./cmd/ost transfers media                  # watch status/progress
+go run ./cmd/ost transfers media retry <id>       # re-queue a failed transfer (resumes)
 
 # torrents: paste a magnet link or upload a .torrent file
 go run ./cmd/ost transfer media "magnet:?xt=urn:btih:..." --key=show
@@ -159,13 +161,32 @@ go run ./cmd/ost ls media videos/      # contents of videos/
   objects once the fetch finishes, so the follower converges through the normal
   op-log. Torrent sources are a magnet link (`{"magnet":"magnet:?...", "key":...}`
   body) or an uploaded `.torrent` file (`Content-Type: application/x-bittorrent`,
-  `?key=` query param). Multi-file torrents become `key/path/file` objects;
-  with no explicit key the torrent name is the base. Progress is persisted to
-  `transfers` and a crashed download is automatically requeued after 15 min.
-  BEP 47 padding files (`.pad`) are skipped. Re-queuing a torrent whose earlier
-  transfer is still active fails with "already being downloaded"; cancel that
-  one first. If a transfer stalls at 0 B (e.g. a webseed was unreachable at
-  start), cancel + re-queue once the seed is reachable. Transfer records live
+  `?key=` query param). The object key may be given either as a `?key=` query
+  param or a `"key"` field in the JSON body (the body wins); with no key the
+  torrent name (or `magnet_<infohash12>`) is the base. Multi-file torrents
+  become `key/path/file` objects and BEP 47 padding files (`.pad`) are skipped.
+  Progress is persisted to `transfers`, and the dashboard's Transfers table
+  shows the failure reason when a job fails. Magnets that list no trackers of
+  their own fall back to `torrent_trackers` / `STORAGED_TORRENT_TRACKERS`
+  (a few public trackers by default), so peer discovery does not depend on DHT
+  alone.
+  Failures instead of hangs: a magnet no peer or tracker can serve fails after
+  `TorrentMetadataTimeout` (3 min), and a swarm that stops delivering data fails
+  after `TorrentStallTimeout` (5 min) with peer/seeder/tracker counts. A crashed
+  download is automatically requeued after 15 min.
+  **Retry with resume:** a failed or cancelled torrent is parked in the client
+  (download paused) with its pieces, so `POST …/transfers/{id}/retry` — the
+  dashboard's *retry* button, or `ost transfers <bucket> retry <id>` — continues
+  from what has already been fetched instead of starting over. Parking a torrent
+  is required because anacrolix stores in-progress data as `<name>.part` and
+  resets a file's piece completion whenever its torrent is re-added. At most
+  `MaxKeptTorrents` (4) transfers are parked; older ones are dropped and their
+  staging reclaimed. Re-queuing a torrent whose earlier transfer is still active
+  fails with "already being downloaded"; cancel that one first. Torrent staging
+  lives in `<data_dir>/torrents` and is cleared before the torrent client starts;
+  on Windows also set `TORRENT_STORAGE_DEFAULT_FILE_IO=classic`, otherwise
+  anacrolix's default mmap IO keeps the staged files locked for the life of the
+  daemon and they are only reclaimed at the next start. Transfer records live
   only on the writing node, so if the leader dies before the job finishes the
   new leader does not inherit it (the 15-min requeue applies only when the same
   node recovers); re-submit from the dashboard or `ost transfer` after failover.

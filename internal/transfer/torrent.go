@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -19,6 +20,102 @@ import (
 	"storaged/internal/meta"
 )
 
+// Torrent transfers are bounded in time so a dead swarm can never occupy a
+// worker slot (and confuse the dashboard) forever: without these a magnet with
+// no reachable peers sits at "downloading 0%" until the 15-minute stuck-requeue
+// silently restarts it.
+var (
+	// TorrentMetadataTimeout bounds the BEP 9 metadata fetch for magnets.
+	TorrentMetadataTimeout = 3 * time.Minute
+	// TorrentStallTimeout bounds how long a torrent may receive no new piece
+	// data before the transfer is failed with a readable reason.
+	TorrentStallTimeout = 5 * time.Minute
+)
+
+// torrentStageDir returns the directory anacrolix stages torrent data in.
+func (m *Manager) torrentStageDir() string {
+	m.tclientMu.Lock()
+	defer m.tclientMu.Unlock()
+	return m.tdir
+}
+
+// retryableErr marks failures where re-queuing the transfer can make progress:
+// a dead swarm, an unreachable webseed, a timeout, or a cancel. The staged
+// pieces are kept for these, so a retry resumes from where it stopped.
+type retryableErr struct{ err error }
+
+func (e retryableErr) Error() string { return e.err.Error() }
+func (e retryableErr) Unwrap() error { return e.err }
+
+// retryableF builds a retryable failure with a formatted message.
+func retryableF(format string, a ...any) error {
+	return retryableErr{fmt.Errorf(format, a...)}
+}
+
+// isRetryable reports whether a failed transfer should keep its staged data so
+// that a retry resumes instead of starting from zero.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var r retryableErr
+	if errors.As(err, &r) {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// removeStaging deletes a torrent's staged data.
+//
+// On Windows anacrolix's default (mmap) file IO keeps the staged files locked
+// for the life of the process, so this can legitimately fail: retry briefly,
+// then leave it for the next daemon start (torrentClient clears the whole
+// staging dir before the client is created). Setting
+// TORRENT_STORAGE_DEFAULT_FILE_IO=classic makes deletion work in-process.
+func (m *Manager) removeStaging(dir string) {
+	if dir == "" {
+		return
+	}
+	for i := 0; i < 5; i++ {
+		if err := os.RemoveAll(dir); err == nil {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return // gone after all (e.g. removed while we retried)
+	}
+	m.log.Printf("torrent staging %s is still locked; it will be reclaimed on the next daemon start "+
+		"(set TORRENT_STORAGE_DEFAULT_FILE_IO=classic to allow in-process removal on Windows)", dir)
+}
+
+// stagingTargets lists everything a torrent stages: the payload path plus
+// anacrolix's in-progress counterpart. Piece data lands in "<name>.part" and is
+// only renamed to the final name when the torrent completes, so a transfer that
+// fails (or is cancelled) mid-download would otherwise leak its .part file.
+func stagingTargets(stage, name string) []string {
+	base := stagedPath(stage, name)
+	if base == "" {
+		return nil
+	}
+	return []string{base, base + ".part"}
+}
+
+// stagedPath resolves the staging path for a torrent name, refusing names that
+// would escape the staging directory.
+func stagedPath(stage, name string) string {
+	if stage == "" || name == "" {
+		return ""
+	}
+	clean := filepath.Clean("/" + strings.ReplaceAll(name, "\\", "/"))
+	target := filepath.Join(stage, clean)
+	rel, err := filepath.Rel(stage, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return target
+}
+
 // torrentClient returns the shared BitTorrent client, creating it on first
 // use. Downloaded piece data is staged under the store's data dir and cleaned
 // up after each torrent commits.
@@ -29,6 +126,11 @@ func (m *Manager) torrentClient() (*torrent.Client, error) {
 		return m.tclient, nil
 	}
 	m.tdir = filepath.Join(m.sto.DataDir(), "torrents")
+	// Reclaim staging data from a previous daemon run. This is the only moment
+	// stale torrent files can reliably be deleted on Windows.
+	if err := os.RemoveAll(m.tdir); err != nil {
+		m.log.Printf("could not clear stale torrent staging %s: %v", m.tdir, err)
+	}
 	if err := os.MkdirAll(m.tdir, 0o755); err != nil {
 		return nil, err
 	}
@@ -54,75 +156,149 @@ func (m *Manager) closeTorrentClient() {
 	tdir := m.tdir
 	m.tdir = ""
 	m.tclientMu.Unlock()
+	m.mu.Lock()
+	m.kept = map[string]*torrent.Torrent{}
+	m.keptOrder = nil
+	m.mu.Unlock()
 	if cl != nil {
-		_ = cl.Close()
+		_ = cl.Close() // drops every torrent, including parked ones
 	}
-	if tdir != "" {
-		_ = os.RemoveAll(tdir)
+	m.removeStaging(tdir)
+}
+
+// MaxKeptTorrents bounds how many failed/cancelled torrents stay parked in the
+// client (with their staged pieces) waiting for a retry.
+const MaxKeptTorrents = 4
+
+// keepTorrent parks a torrent so that a retry resumes it. Its data download is
+// paused so a cancelled or stalled transfer stops consuming bandwidth, while
+// the pieces already on disk (and the in-memory completion) are retained.
+func (m *Manager) keepTorrent(id string, tt *torrent.Torrent) {
+	if tt == nil {
+		return
 	}
+	tt.DisallowDataDownload()
+	m.mu.Lock()
+	if _, dup := m.kept[id]; !dup {
+		m.keptOrder = append(m.keptOrder, id)
+	}
+	m.kept[id] = tt
+	var evicted []*torrent.Torrent
+	for len(m.keptOrder) > MaxKeptTorrents {
+		oldest := m.keptOrder[0]
+		m.keptOrder = m.keptOrder[1:]
+		if e, ok := m.kept[oldest]; ok {
+			delete(m.kept, oldest)
+			evicted = append(evicted, e)
+		}
+	}
+	m.mu.Unlock()
+
+	stage := m.torrentStageDir()
+	for _, e := range evicted {
+		name := ""
+		if info := e.Info(); info != nil {
+			name = info.BestName()
+		}
+		e.Drop()
+		for _, target := range stagingTargets(stage, name) {
+			m.removeStaging(target)
+		}
+		m.log.Printf("dropped a parked torrent to stay within %d kept transfers", MaxKeptTorrents)
+	}
+}
+
+// takeKeptTorrent pops a parked torrent for a retry (nil when there is none).
+func (m *Manager) takeKeptTorrent(id string) *torrent.Torrent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tt, ok := m.kept[id]
+	if !ok {
+		return nil
+	}
+	delete(m.kept, id)
+	for i, k := range m.keptOrder {
+		if k == id {
+			m.keptOrder = append(m.keptOrder[:i], m.keptOrder[i+1:]...)
+			break
+		}
+	}
+	return tt
 }
 
 // downloadTorrent downloads a magnet/.torrent and commits each contained file
 // as an object. The transfer's Key is the base key (or the torrent name when
 // empty); multi-file torrents become base/<relative path> objects.
-func (m *Manager) downloadTorrent(ctx context.Context, t meta.Transfer) error {
+func (m *Manager) downloadTorrent(ctx context.Context, t meta.Transfer) (err error) {
 	cl, err := m.torrentClient()
 	if err != nil {
 		return err
 	}
 
-	var tt *torrent.Torrent
+	stage := m.torrentStageDir()
+	// A retry of a parked torrent continues that very torrent: anacrolix stores
+	// in-progress data as "<name>.part" and resets a file's piece completion
+	// whenever its torrent is re-added, so dropping and re-adding would silently
+	// re-download everything.
 	var spec *torrent.TorrentSpec
-	switch {
-	case t.TorrentData != "":
-		raw, err := base64.StdEncoding.DecodeString(t.TorrentData)
-		if err != nil {
-			return fmt.Errorf("bad .torrent payload: %w", err)
-		}
-		mi, err := metainfo.Load(bytes.NewReader(raw))
-		if err != nil {
-			return fmt.Errorf("bad .torrent metainfo: %w", err)
-		}
-		spec, err = torrent.TorrentSpecFromMetaInfoErr(mi)
+	tt := m.takeKeptTorrent(t.ID)
+	if tt != nil {
+		tt.AllowDataDownload()
+	} else {
+		spec, err = torrentSpecFor(t, m.cfg.TorrentTrackers)
 		if err != nil {
 			return err
 		}
-	case strings.HasPrefix(t.URL, "magnet:"):
-		spec, err = torrent.TorrentSpecFromMagnetUri(t.URL)
+		var fresh bool
+		tt, fresh, err = cl.AddTorrentSpec(spec)
 		if err != nil {
 			return err
 		}
-	default:
-		return fmt.Errorf("torrent transfer has neither magnet nor metainfo")
-	}
-	tt, fresh, err := cl.AddTorrentSpec(spec)
-	if err != nil {
-		return err
-	}
-	if !fresh {
-		// Dropping releases only our reference; the active transfer owns it.
-		tt.Drop()
-		tt = nil
-		return fmt.Errorf("this torrent is already being downloaded by another transfer; cancel that one first")
+		if !fresh {
+			// Dropping releases only our reference; the active transfer owns it.
+			tt.Drop()
+			return fmt.Errorf("this torrent is already being downloaded by another transfer; cancel that one first")
+		}
 	}
 
-	var info *metainfo.Info
 	defer func() {
-		if tt != nil {
+		info := tt.Info()
+		if info == nil {
+			// no metadata yet -> nothing was staged
+			if err != nil && isRetryable(err) {
+				m.keepTorrent(t.ID, tt)
+				return
+			}
 			tt.Drop()
+			return
 		}
-		if info != nil && m.tdir != "" {
-			_ = os.RemoveAll(filepath.Join(m.tdir, info.Name))
+		if err != nil && isRetryable(err) {
+			// keep the pieces (and the torrent) so POST .../transfers/{id}/retry resumes
+			m.log.Printf("transfer %s: keeping staged data for a retry (%v)", t.ID, err)
+			m.keepTorrent(t.ID, tt)
+			return
+		}
+		tt.Drop()
+		for _, target := range stagingTargets(stage, info.BestName()) {
+			m.removeStaging(target)
 		}
 	}()
 
-	// wait for metadata to arrive (magnet announces / tracker / DHT)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-tt.GotInfo():
+	// Wait for metadata to arrive (magnet announces / tracker / DHT). A magnet
+	// with no reachable peers would otherwise block here forever. A parked
+	// torrent that already has metadata resumes immediately.
+	if tt.Info() == nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tt.GotInfo():
+		case <-time.After(TorrentMetadataTimeout):
+			return retryableF("no metadata after %s: no peer or tracker supplied the torrent "+
+				"(peers=%d, trackers=%d) — check the magnet's trackers or upload the .torrent file",
+				TorrentMetadataTimeout, tt.Stats().TotalPeers, trackerCount(spec))
+		}
 	}
-	info = tt.Info()
+	info := tt.Info()
 	tt.DownloadAll()
 
 	total := tt.Length()
@@ -131,10 +307,14 @@ func (m *Manager) downloadTorrent(ctx context.Context, t meta.Transfer) error {
 		return fmt.Errorf("torrent contains no files")
 	}
 
-	// Phase 1: download all pieces into the staging dir, reporting progress.
+	// Phase 1: download all pieces into the staging dir, reporting progress and
+	// failing when the swarm stops delivering data (dead torrent, no seeders,
+	// blocked inbound/outbound BitTorrent traffic).
 	{
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
+		lastBytes := tt.BytesCompleted()
+		lastAdvance := time.Now()
 		for {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -148,6 +328,18 @@ func (m *Manager) downloadTorrent(ctx context.Context, t meta.Transfer) error {
 			case <-tt.Complete().On():
 				goto downloaded
 			case <-ticker.C:
+				bc := tt.BytesCompleted()
+				if bc > lastBytes {
+					lastBytes, lastAdvance = bc, time.Now()
+					continue
+				}
+				if time.Since(lastAdvance) >= TorrentStallTimeout {
+					st := tt.Stats()
+					return retryableF("stalled for %s at %s of %s (peers=%d, seeders=%d, trackers=%d, webseeds=%d): "+
+						"no data is arriving — the swarm may have no seeders or BitTorrent traffic may be blocked",
+						TorrentStallTimeout, byteSize(bc), byteSize(total), st.TotalPeers, st.ConnectedSeeders,
+						trackerCount(spec), webseedCount(spec))
+				}
 			}
 		}
 	}
@@ -222,6 +414,13 @@ downloaded:
 			return closeErr2
 		}
 
+		// a cancel that lands while the file was being copied out must still win:
+		// otherwise the transfer commits after the user cancelled it
+		if ctx.Err() != nil {
+			_ = m.sto.AbortTmp(tmpID)
+			return ctx.Err()
+		}
+
 		// re-check the lease before committing each file
 		if !m.canWrite() {
 			_ = m.sto.AbortTmp(tmpID)
@@ -269,6 +468,61 @@ func (a *aggregateTracker) add(n int64) {
 		a.lastTS = time.Now()
 		_ = a.m.meta.UpdateTransferProgress(a.id, a.done, a.total)
 	}
+}
+
+// addFallbackTrackers appends the configured announce URLs to a magnet spec
+// that carries none of its own (most public magnets list no trackers, which
+// would leave peer discovery to DHT alone).
+func addFallbackTrackers(spec *torrent.TorrentSpec, extra []string) {
+	if spec == nil || len(extra) == 0 || trackerCount(spec) > 0 {
+		return
+	}
+	spec.Trackers = append(spec.Trackers, append([]string(nil), extra...))
+}
+
+// torrentSpecFor builds the torrent spec for a transfer's source (uploaded
+// .torrent metainfo or a magnet link).
+func torrentSpecFor(t meta.Transfer, fallbackTrackers []string) (*torrent.TorrentSpec, error) {
+	switch {
+	case t.TorrentData != "":
+		raw, err := base64.StdEncoding.DecodeString(t.TorrentData)
+		if err != nil {
+			return nil, fmt.Errorf("bad .torrent payload: %w", err)
+		}
+		mi, err := metainfo.Load(bytes.NewReader(raw))
+		if err != nil {
+			return nil, fmt.Errorf("bad .torrent metainfo: %w", err)
+		}
+		return torrent.TorrentSpecFromMetaInfoErr(mi)
+	case strings.HasPrefix(t.URL, "magnet:"):
+		spec, err := torrent.TorrentSpecFromMagnetUri(t.URL)
+		if err != nil {
+			return nil, fmt.Errorf("bad magnet link: %w", err)
+		}
+		addFallbackTrackers(spec, fallbackTrackers)
+		return spec, nil
+	}
+	return nil, fmt.Errorf("torrent transfer has neither magnet nor metainfo")
+}
+
+// webseedCount counts the webseed URLs in a torrent spec.
+func webseedCount(spec *torrent.TorrentSpec) int {
+	if spec == nil {
+		return 0
+	}
+	return len(spec.Webseeds)
+}
+
+// trackerCount counts the tracker URLs in a torrent spec (tiers flattened).
+func trackerCount(spec *torrent.TorrentSpec) int {
+	if spec == nil {
+		return 0
+	}
+	n := 0
+	for _, tier := range spec.Trackers {
+		n += len(tier)
+	}
+	return n
 }
 
 // sanitizeName turns an untrusted torrent file/dir name into key-safe segments.

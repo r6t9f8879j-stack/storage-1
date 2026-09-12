@@ -116,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/buckets/{b}/transfers", authz(s, ScopeRead)(s.handleListTransfers))
 	mux.HandleFunc("GET /v1/transfers/{id}", authz(s, ScopeRead)(s.handleGetTransfer))
 	mux.HandleFunc("DELETE /v1/buckets/{b}/transfers/{id}", authz(s, ScopeAdmin)(s.handleCancelTransfer))
+	mux.HandleFunc("POST /v1/buckets/{b}/transfers/{id}/retry", authz(s, ScopeAdmin)(s.handleRetryTransfer))
 
 	// trash (soft delete)
 	mux.HandleFunc("GET /v1/trash", authz(s, ScopeRead)(s.handleListTrash))
@@ -183,7 +184,7 @@ func authz(s *Server, need Scope) func(http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			sc := s.auth.ClientScope(r)
 			if sc < need {
-				unauthorized(w, "missing or invalid credentials")
+				unauthorized(w, s.credentialErrMsg(r))
 				return
 			}
 			if !s.auth.Allow(remoteKey(r) + "|" + auth.BearerToken(r)) {
@@ -214,7 +215,7 @@ func signedOrAuthz(s *Server, need Scope) func(http.HandlerFunc) http.HandlerFun
 				authorized = ok
 			}
 			if !authorized {
-				unauthorized(w, "missing or invalid credentials")
+				unauthorized(w, s.credentialErrMsg(r))
 				return
 			}
 			if !s.auth.Allow(remoteKey(r)) {
@@ -224,6 +225,19 @@ func signedOrAuthz(s *Server, need Scope) func(http.HandlerFunc) http.HandlerFun
 			next(w, r)
 		}
 	}
+}
+
+// credentialErrMsg separates "no credentials at all" from "credentials that
+// stopped working". Dashboard sessions are Supabase access tokens, which expire
+// after about an hour, so an expired session is the usual cause of a 401 here.
+func (s *Server) credentialErrMsg(r *http.Request) string {
+	if auth.BearerToken(r) == "" {
+		return "missing credentials: sign in, or send a Bearer key"
+	}
+	if s.auth.SupabaseEnabled() {
+		return "invalid or expired credentials: dashboard sessions last about an hour — sign in again (or check the Bearer key)"
+	}
+	return "missing or invalid credentials"
 }
 
 func peerAuth(s *Server, next http.HandlerFunc) http.HandlerFunc {
@@ -462,6 +476,7 @@ func (s *Server) dashboardPayload(ctx context.Context) (map[string]any, error) {
 		{"method": "GET", "path": "/v1/buckets/{b}/transfers", "desc": "List transfers"},
 		{"method": "GET", "path": "/v1/transfers/{id}", "desc": "Get transfer status"},
 		{"method": "DELETE", "path": "/v1/buckets/{b}/transfers/{id}", "desc": "Cancel transfer"},
+		{"method": "POST", "path": "/v1/buckets/{b}/transfers/{id}/retry", "desc": "Retry a failed transfer (resumes torrents)"},
 		{"method": "GET", "path": "/v1/public/{b}/{key...}", "desc": "Public download (no auth)"},
 		{"method": "GET", "path": "/v1/trash", "desc": "List trashed objects"},
 		{"method": "POST", "path": "/v1/trash/restore", "desc": "Restore from trash"},

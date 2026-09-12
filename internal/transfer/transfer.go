@@ -60,6 +60,14 @@ type Manager struct {
 
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
+
+	// kept holds torrents whose transfer failed or was cancelled and can be
+	// retried: anacrolix resolves in-progress files as "<name>.part" and resets
+	// their piece completion when a torrent is re-added, so a resume only works
+	// while the torrent stays in the client. keptOrder is oldest-first, used to
+	// bound how many staged torrents we park at once.
+	kept      map[string]*torrent.Torrent
+	keptOrder []string
 }
 
 // NewManager builds a transfer manager. canWrite reports whether this node
@@ -84,6 +92,7 @@ func NewManager(cfg *config.Config, m *meta.Meta, st *store.Store, canWrite func
 		},
 		notify:  make(chan struct{}, 1),
 		running: map[string]context.CancelFunc{},
+		kept:    map[string]*torrent.Torrent{},
 	}
 }
 
@@ -140,14 +149,16 @@ func (m *Manager) drain(ctx context.Context) {
 		return
 	}
 	for _, t := range queued {
+		ctx, cancel := context.WithCancel(ctx)
+		// claim the job under the lock: two overlapping drain() calls (the
+		// ticker plus a Notify) must not start the same transfer twice, or the
+		// second worker fails the job with "already being downloaded".
 		m.mu.Lock()
-		_, already := m.running[t.ID]
-		m.mu.Unlock()
-		if already {
+		if _, already := m.running[t.ID]; already {
+			m.mu.Unlock()
+			cancel()
 			continue
 		}
-		ctx, cancel := context.WithCancel(ctx)
-		m.mu.Lock()
 		m.running[t.ID] = cancel
 		m.mu.Unlock()
 		go func(t meta.Transfer) {
@@ -177,7 +188,11 @@ func (m *Manager) download(ctx context.Context, t meta.Transfer) {
 		if ctx.Err() != nil {
 			_ = m.meta.SetTransferStatus(t.ID, StatusCancelled, "")
 		} else {
-			_ = m.meta.SetTransferStatus(t.ID, StatusFailed, truncate(err.Error(), 500))
+			msg := err.Error()
+			if isRetryable(err) {
+				msg += " (retry to resume from the data already downloaded)"
+			}
+			_ = m.meta.SetTransferStatus(t.ID, StatusFailed, truncate(msg, 500))
 		}
 		m.log.Printf("transfer %s (%s) failed: %v", t.ID, t.Key, err)
 	}

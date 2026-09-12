@@ -161,6 +161,7 @@ func debugRoutes() []string {
 		"GET      /v1/buckets/{b}/transfers",
 		"GET      /v1/transfers/{id}",
 		"DELETE   /v1/buckets/{b}/transfers/{id}",
+		"POST     /v1/buckets/{b}/transfers/{id}/retry",
 		"GET      /v1/trash",
 		"POST     /v1/trash/restore",
 		"POST     /v1/trash/purge",

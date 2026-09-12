@@ -24,6 +24,15 @@ gc_grace         = "24h"        # orphaned blobs younger than this survive GC
 signed_url_ttl   = "5m"         # lifetime of presigned URLs
 rate_per_minute  = 600
 
+# Extra trackers for magnet links that list none of their own (most public
+# magnets). Env: STORAGED_TORRENT_TRACKERS (comma separated, empty disables).
+torrent_trackers = [
+  "udp://tracker.opentrackr.org:1337/announce",
+  "udp://open.tracker.cl:1337/announce",
+  "udp://tracker.openbittorrent.com:6969/announce",
+  "udp://exodus.desync.com:6969/announce",
+]
+
 # --- replication (follower only) ---
 [peer]
 enabled = false

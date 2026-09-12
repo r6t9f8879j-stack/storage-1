@@ -41,6 +41,12 @@ jobs:
       STORAGED_PEER_URL: ${{ secrets.STORAGED_PEER_URL }}
       STORAGED_PEER_KEY: ${{ secrets.STORAGED_PEER_SECRET }}
       STORAGED_PUBLIC_URL: ${{ vars.STORAGED_PUBLIC_URL }}
+      # anacrolix/torrent defaults to mmap file IO, which keeps staged torrent
+      # files locked for the life of the daemon on Windows: staging data could
+      # never be deleted and D:\storage\torrents grew until the disk hit the
+      # high-water mark (which then blocks all writes). 'classic' IO releases
+      # the handles after a transfer, so cleanup works.
+      TORRENT_STORAGE_DEFAULT_FILE_IO: classic
       CF_TUNNEL_ID: f8cde1bb-85e9-44fd-abbd-a652d16fa63f
       CF_TUNNEL_DOMAIN: storage.chuglii.in
       CF_TUNNEL_CREDENTIALS: ${{ secrets.CF_TUNNEL_CREDENTIALS }}

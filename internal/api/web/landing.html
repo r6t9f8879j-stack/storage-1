@@ -588,6 +588,10 @@ tr.highlight td{background:rgba(77,159,255,.06)}
             <div style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Recent logs (newest at bottom)</div>
             <div id="dbg-logs" style="font-family:var(--mono);font-size:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem;white-space:pre-wrap;overflow:auto;max-height:52vh"></div>
           </div>
+          <div style="flex:1;min-width:260px">
+            <div style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Live routes <span id="dbg-routes-count" style="color:var(--dim2)"></span></div>
+            <div id="dbg-routes" style="font-family:var(--mono);font-size:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem;overflow:auto;max-height:52vh"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -672,9 +676,11 @@ function toggleAuth() {
   if (session && session.access_token) { doSignOut(); return; }
   openAuthModal();
 }
-function openAuthModal() {
+function openAuthModal(reason) {
   if (!SUPA) return toast('Supabase auth not configured on this node', true);
-  $('auth-err').style.display = 'none';
+  const errEl = $('auth-err');
+  if (reason) { errEl.textContent = reason; errEl.style.display = 'block'; }
+  else { errEl.style.display = 'none'; }
   $('auth-modal').classList.add('open');
   $('auth-email').focus();
 }
@@ -735,16 +741,50 @@ async function doSignOut() {
   saveSession(null);
   toast('signed out');
 }
+// A session only dies when Supabase says so (invalid/rotated refresh token).
+// Anything else — offline, an edge hiccup, a 5xx — must keep the stored
+// session, which is why reloading no longer signs you out.
+function credentialRejected(err) {
+  if (!err) return false;
+  const code = String(err.code || '') + ' ' + String(err.error_code || '');
+  if (/invalid_grant|refresh_token_not_found|session_not_found|invalid_refresh_token/i.test(code)) return true;
+  return err.status === 400 || err.status === 401 || err.status === 403;
+}
+async function refreshSessionOnce() {
+  if (!SUPA) return null;
+  try {
+    const { data, error } = await SUPA.auth.refreshSession();
+    if (data && data.session && data.session.access_token) { saveSession(data.session); return data.session; }
+    if (credentialRejected(error)) saveSession(null);
+  } catch (e) { /* transient: keep what we have */ }
+  return null;
+}
+// supabase-js refreshes tokens in the background on its own; mirror whatever it
+// ends up with so our stored copy never lags behind a rotation.
+if (SUPA) {
+  SUPA.auth.onAuthStateChange((event, s) => {
+    if (s && s.access_token) saveSession(s);
+    else if (event === 'SIGNED_OUT') saveSession(null);
+  });
+}
 async function restoreSession() {
-  if (!SUPA || !session) { renderAuthUI(); return; }
+  if (!SUPA) { renderAuthUI(); return; }
+  // adopt the client's own session when it has a live one: after a token
+  // rotation our localStorage copy is stale, but supabase-js is current.
+  try {
+    const { data } = await SUPA.auth.getSession();
+    if (data && data.session && data.session.access_token) { saveSession(data.session); return; }
+  } catch (e) { /* fall through to our stored copy */ }
+  if (!session) { renderAuthUI(); return; }
   try {
     const { data, error } = await SUPA.auth.setSession({
       access_token: session.access_token,
       refresh_token: session.refresh_token
     });
-    if (error || !data.session) saveSession(null);
-    else saveSession(data.session);
-  } catch(e) { saveSession(null); }
+    if (data && data.session && data.session.access_token) { saveSession(data.session); return; }
+    if (credentialRejected(error)) saveSession(null);
+  } catch (e) { /* transient: keep the stored session */ }
+  renderAuthUI();
 }
 
 // ── Theme ────────────────────────────────────────────────────────────
@@ -841,11 +881,20 @@ function hdrs(extra) {
   return h;
 }
 async function apiFetch(path, opts) {
-  const res = await fetch(location.origin + path, Object.assign({}, opts, { headers: hdrs(opts && opts.headers) }));
+  const send = () => fetch(location.origin + path, Object.assign({}, opts, { headers: hdrs(opts && opts.headers) }));
+  let res = await send();
+  // Supabase access tokens last about an hour and the dashboard holds them in
+  // localStorage, so the first call after expiry 401s: refresh once and retry
+  // instead of dropping the user on the sign-in modal.
+  if (res.status === 401 && SUPA && session && session.refresh_token) {
+    if (await refreshSessionOnce()) res = await send();
+  }
   if (!res.ok) {
-    if (res.status === 401 && SUPA) openAuthModal();
     let msg = res.statusText;
     try { const e = await res.json(); if (e.error) msg = e.error; } catch(err) {}
+    if (res.status === 401 && SUPA) {
+      if (!hasCreds()) openAuthModal('your session expired — sign in again');
+    }
     const err = new Error(msg);
     err.status = res.status;
     throw err;
@@ -1332,6 +1381,17 @@ async function deleteEntry(i) {
     const m = { queued:'bg', downloading:'bg ok', done:'ok', failed:'err', cancelled:'bg err' };
     return `<span class="badge ${m[s]||''}">${s}</span>`;
   }
+  // cancel while it runs, retry once it stopped (a torrent retry resumes from
+  // the pieces already downloaded)
+  function actionBtns(t) {
+    if (t.status === 'queued' || t.status === 'downloading') {
+      return `<button class="ctrl-btn" onclick="tfCancel('${esc(t.bucket)}','${esc(t.id)}')">cancel</button>`;
+    }
+    if (t.status === 'failed' || t.status === 'cancelled') {
+      return `<button class="ctrl-btn" title="resumes from the data already downloaded" onclick="tfRetry('${esc(t.bucket)}','${esc(t.id)}')">retry</button>`;
+    }
+    return '';
+  }
 
   function render() {
     const oldUrl = $('tf-url') ? $('tf-url').value : '';
@@ -1344,7 +1404,7 @@ async function deleteEntry(i) {
         : 'var(--secondary)';
       const src = t.url || '';
       const active = (t.status === 'queued' || t.status === 'downloading');
-      return `<tr>
+      const row = `<tr>
         <td style="font-family:var(--mono);font-size:.64rem">${esc(t.id).slice(-12)}</td>
         <td><strong>${esc(t.bucket)}</strong></td>
         <td style="font-family:var(--mono);font-size:.72rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(src)}">${esc(t.key)}</td>
@@ -1357,9 +1417,14 @@ async function deleteEntry(i) {
           </div>
         </td>
         <td style="font-size:.6rem;color:var(--dim);font-family:var(--mono)">${esc(t.kind)}</td>
-        <td>${active ? `<button class="ctrl-btn" onclick="tfCancel('${esc(t.bucket)}','${esc(t.id)}')">cancel</button>` : ''}</td>
-        ${t.error ? `<tr><td colspan="8" style="font-size:.64rem;color:var(--red);font-family:var(--mono)">${esc(t.error)}</td></tr>` : ''}
+        <td style="white-space:nowrap">${actionBtns(t)}</td>
       </tr>`;
+      // a separate sibling row — nesting <tr> inside <tr> makes browsers hoist
+      // the error out of the table, so failures were invisible
+      const errRow = t.error
+        ? `<tr><td colspan="8" style="font-size:.64rem;color:var(--red);font-family:var(--mono);padding-top:0;overflow-wrap:anywhere">${esc(t.error)}</td></tr>`
+        : '';
+      return row + errRow;
     }).join('');
 
     const canWrite = D.status && D.status.writes === true;
@@ -1426,6 +1491,22 @@ async function deleteEntry(i) {
     $('tf-file-label').textContent = name || '.torrent file';
     $('tf-file-name').textContent = name ? 'picked, clears URL field' : '';
     if (name) $('tf-url').value = '';
+  };
+
+  window.tfRetry = async function(bucket, id) {
+    if (!hasCreds()) return alert('sign in or enter an API key first');
+    const res = await fetch(location.origin + '/v1/buckets/' + encodeURIComponent(bucket) + '/transfers/' + encodeURIComponent(id) + '/retry', {
+      method: 'POST', headers: hdrs({})
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      return alert(e.error || res.statusText);
+    }
+    const d = await res.json();
+    const t = transfers.find(x => x.id === id);
+    if (t && d.transfer) Object.assign(t, d.transfer);
+    else if (d.transfer) transfers.unshift(d.transfer);
+    render();
   };
 
   window.tfStart = async function() {
@@ -1512,23 +1593,42 @@ async function deleteEntry(i) {
   let timer = null;
   const statsEl = $('dbg-stats');
   const logsEl = $('dbg-logs');
+  const routesEl = $('dbg-routes');
   const badge = $('dbg-badge');
 
+  // apiFetch takes a *path*: it prepends location.origin itself. Passing an
+  // absolute URL here produced "https://hosthttps://host/v1/debug/stats", which
+  // fetch rejects with "Failed to fetch".
+  const NO_CREDS = 'sign in (or paste an admin/read API key on the Overview tab), then refresh';
+
   async function loadStats() {
+    if (!hasCreds()) {
+      statsEl.textContent = '✗ stats need credentials — ' + NO_CREDS;
+      badge.textContent = 'auth needed';
+      return;
+    }
     try {
-      const d = await apiFetch(location.origin + '/v1/debug/stats');
+      const d = await apiFetch('/v1/debug/stats');
       statsEl.textContent = formatDbg(d);
       badge.textContent = 'updated ' + new Date().toLocaleTimeString();
     } catch (e) {
+      if (e && e.status === 401) {
+        statsEl.textContent = '✗ unauthorized — ' + NO_CREDS;
+        badge.textContent = 'auth needed';
+        return;
+      }
       statsEl.textContent = '✗ stats unavailable: ' + (e.message || e);
-      badge.textContent = 'auth needed';
+      badge.textContent = 'error';
     }
   }
 
   async function loadLogs() {
-    if (!hasCreds()) return;
+    if (!hasCreds()) {
+      logsEl.textContent = '✗ logs need credentials — ' + NO_CREDS;
+      return;
+    }
     try {
-      const d = await apiFetch(location.origin + '/v1/debug/logs?n=250');
+      const d = await apiFetch('/v1/debug/logs?n=250');
       const lines = (d.logs || []).map(l => {
         const t = (l.ts || '').substring(11, 19);
         if (l.kind === 'access') return t + ' access  ' + String(l.status).padStart(3) + '  ' + l.method + ' ' + l.path + '  ' + l.duration_ms + 'ms  ' + (l.remote || '');
@@ -1536,7 +1636,9 @@ async function deleteEntry(i) {
       });
       logsEl.textContent = lines.join('\n');
     } catch (e) {
-      logsEl.textContent = '✗ logs unavailable: ' + (e.message || e);
+      logsEl.textContent = (e && e.status === 401)
+        ? '✗ unauthorized — ' + NO_CREDS
+        : '✗ logs unavailable: ' + (e.message || e);
     }
   }
 
@@ -1568,7 +1670,37 @@ async function deleteEntry(i) {
     return out.join('\n');
   }
 
-  window.debugReload = function() { loadStats(); loadLogs(); };
+  // GET /v1/debug/routes lists the routes this build actually registered, so
+  // the page reflects the running daemon instead of a hardcoded table.
+  async function loadRoutes() {
+    const countEl = $('dbg-routes-count');
+    if (!routesEl) return;
+    if (!hasCreds()) {
+      routesEl.textContent = '✗ routes need credentials — ' + NO_CREDS;
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+    try {
+      const d = await apiFetch('/v1/debug/routes');
+      const routes = d.routes || [];
+      if (countEl) countEl.textContent = '(' + routes.length + ')';
+      routesEl.innerHTML = routes.map(r => {
+        const parts = String(r).trim().split(/\s+/);
+        const method = parts.shift() || '';
+        const path = parts.join(' ');
+        return `<div style="display:flex;gap:.45rem;align-items:baseline;padding:.04rem 0">
+          <span class="meth ${esc(method)}" style="flex:none">${esc(method)}</span>
+          <span style="overflow-wrap:anywhere">${esc(path)}</span>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      routesEl.textContent = (e && e.status === 401)
+        ? '✗ unauthorized — ' + NO_CREDS
+        : '✗ routes unavailable: ' + (e.message || e);
+    }
+  }
+
+  window.debugReload = function() { loadStats(); loadLogs(); loadRoutes(); };
   window.debugAuto = function(on) {
     if (timer) clearInterval(timer);
     timer = null;

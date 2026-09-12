@@ -1170,6 +1170,24 @@ func (m *Meta) SetTransferStatus(id, status, errMsg string) error {
 	return err
 }
 
+// RetryTransfer re-queues a finished transfer so the worker picks it up again.
+// Progress is left untouched on purpose: a failed torrent keeps its staged
+// pieces, so the retry resumes from where it stopped instead of starting over.
+func (m *Meta) RetryTransfer(id string) error {
+	t, err := m.GetTransfer(id)
+	if err != nil {
+		return err
+	}
+	switch t.Status {
+	case StatusFailed, StatusCancelled:
+	default:
+		return ErrInvalidF("transfer is %s; only failed or cancelled transfers can be retried", t.Status)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = m.db.Exec(`UPDATE transfers SET status='queued', error='', updated_at=? WHERE id=?`, now, id)
+	return err
+}
+
 func (m *Meta) QueuedTransfers(limit int) ([]Transfer, error) {
 	if limit <= 0 {
 		limit = 4

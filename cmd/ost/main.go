@@ -352,7 +352,7 @@ func cmdTransfer(ctx context.Context, c *client.Client, args []string) error {
 
 func cmdTransfers(ctx context.Context, c *client.Client, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: ost transfers BUCKET [cancel ID]")
+		return fmt.Errorf("usage: ost transfers BUCKET [cancel|retry ID]")
 	}
 	if len(args) >= 2 && args[1] == "cancel" {
 		if len(args) < 3 {
@@ -362,6 +362,17 @@ func cmdTransfers(ctx context.Context, c *client.Client, args []string) error {
 			return err
 		}
 		fmt.Printf("cancelled %s\n", args[2])
+		return nil
+	}
+	if len(args) >= 2 && args[1] == "retry" {
+		if len(args) < 3 {
+			return fmt.Errorf("usage: ost transfers BUCKET retry ID")
+		}
+		t, err := c.RetryTransfer(ctx, args[0], args[2])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("retrying %s (status=%s, resumed from %s)\n", t.ID, t.Status, human(t.Progress))
 		return nil
 	}
 	list, err := c.ListTransfers(ctx, args[0])

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,6 +150,48 @@ func TestCreateTransferMagnetDefaultKey(t *testing.T) {
 	}
 }
 
+// The dashboard sends the object key as a ?key= query param; JSON bodies may
+// override it. Both must land the object where the user asked.
+func TestCreateTransferQueryKeyApplied(t *testing.T) {
+	h := newTestAPI(t)
+	createBucket(t, h, "media")
+	magnet := "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=Test"
+
+	w := doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers?key=shows/s01", testAdmin, "application/json",
+		[]byte(`{"magnet":"`+magnet+`"}`))
+	if w.Code != 201 {
+		t.Fatalf("magnet with query key: status %d: %s", w.Code, w.Body.String())
+	}
+	if tf := decodeTransfer(t, w); tf.Key != "shows/s01" {
+		t.Errorf("magnet query key = %q, want shows/s01", tf.Key)
+	}
+
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers?key=ignored", testAdmin, "application/json",
+		[]byte(`{"magnet":"`+magnet+`","key":"body/wins"}`))
+	if w.Code != 201 {
+		t.Fatalf("magnet with body key: status %d: %s", w.Code, w.Body.String())
+	}
+	if tf := decodeTransfer(t, w); tf.Key != "body/wins" {
+		t.Errorf("magnet body key = %q, want body/wins", tf.Key)
+	}
+
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers?key=videos/big.iso", testAdmin, "application/json",
+		[]byte(`{"url":"http://example.com/a/b/big.iso"}`))
+	if w.Code != 201 {
+		t.Fatalf("url with query key: status %d: %s", w.Code, w.Body.String())
+	}
+	if tf := decodeTransfer(t, w); tf.Key != "videos/big.iso" {
+		t.Errorf("url query key = %q, want videos/big.iso", tf.Key)
+	}
+
+	// an invalid query key is still rejected
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers?key="+url.QueryEscape("../escape"), testAdmin, "application/json",
+		[]byte(`{"magnet":"`+magnet+`"}`))
+	if w.Code != 400 {
+		t.Errorf("invalid query key: status %d, want 400", w.Code)
+	}
+}
+
 func TestCreateTransferRawTorrent(t *testing.T) {
 	h := newTestAPI(t)
 	createBucket(t, h, "media")
@@ -225,6 +268,46 @@ func TestCancelTransfer(t *testing.T) {
 	}
 	if got.Transfer.Status != "cancelled" {
 		t.Errorf("status after cancel = %q, want cancelled", got.Transfer.Status)
+	}
+}
+
+func TestRetryTransferEndpoint(t *testing.T) {
+	h := newTestAPI(t)
+	createBucket(t, h, "media")
+	cw := doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers", testAdmin, "application/json",
+		[]byte(`{"url":"http://example.com/slow.iso","key":"k"}`))
+	tf := decodeTransfer(t, cw)
+
+	// queued transfers are still running: nothing to retry yet
+	w := doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers/"+tf.ID+"/retry", testAdmin, "", nil)
+	if w.Code != 400 {
+		t.Errorf("retry of a queued transfer = %d, want 400 (%s)", w.Code, w.Body.String())
+	}
+
+	// a stopped (cancelled or failed) transfer can be re-queued in place
+	doReq(t, h, http.MethodDelete, "/v1/buckets/media/transfers/"+tf.ID, testAdmin, "", nil)
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers/"+tf.ID+"/retry", testAdmin, "", nil)
+	if w.Code != 200 {
+		t.Fatalf("retry after cancel = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if got := decodeTransfer(t, w); got.Status != "queued" || got.Error != "" {
+		t.Errorf("retried transfer = %+v, want queued with no error", got)
+	}
+
+	// unknown id / wrong bucket
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers/nope/retry", testAdmin, "", nil)
+	if w.Code != 404 {
+		t.Errorf("retry of a missing transfer = %d, want 404", w.Code)
+	}
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/other/transfers/"+tf.ID+"/retry", testAdmin, "", nil)
+	if w.Code != 404 {
+		t.Errorf("retry under the wrong bucket = %d, want 404", w.Code)
+	}
+
+	// and it needs admin credentials
+	w = doReq(t, h, http.MethodPost, "/v1/buckets/media/transfers/"+tf.ID+"/retry", testRead, "", nil)
+	if w.Code != 401 {
+		t.Errorf("retry with a read key = %d, want 401", w.Code)
 	}
 }
 
