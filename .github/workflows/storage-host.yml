@@ -54,8 +54,21 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Cache Go modules + build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\go-mod
+            ${{ runner.temp }}\go-build
+          key: go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-
+
       - name: Build binaries
         shell: pwsh
+        env:
+          GOMODCACHE: ${{ runner.temp }}\go-mod
+          GOCACHE: ${{ runner.temp }}\go-build
         run: |
           go build -o "${{ github.workspace }}\cmd\storaged\storaged.exe" ./cmd/storaged
           go build -o "${{ github.workspace }}\cmd\ost\ost.exe" ./cmd/ost
@@ -79,8 +92,7 @@ jobs:
         shell: pwsh
         id: prevrun
         run: |
-          $prev = & gh run list --workflow=storage-host.yml --limit=5 `
-                --json databaseId,status,conclusion --jq "[.[] | select(.status==\"completed\" and .conclusion==\"success\")][0].databaseId"
+          $prev = & gh run list --workflow=storage-host.yml --limit=5 --json databaseId,status,conclusion --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId'
           if (-not $prev) { $prev = $null }
           Write-Host "previous successful run: $prev"
           "run_id=$prev" | Out-File -FilePath "$env:GITHUB_OUTPUT" -Append -Encoding utf8
