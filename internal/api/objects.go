@@ -151,7 +151,8 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
-	n, copyErr := io.Copy(tmp, body)
+	buf := make([]byte, 1<<20)
+	n, copyErr := io.CopyBuffer(tmp, body, buf)
 	closeErr := tmp.Close()
 	if copyErr != nil {
 		s.handleErr(w, copyErr)
@@ -505,7 +506,7 @@ _, _, ok, err := s.meta.UploadByID(uploadID)
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
-	if _, err := io.Copy(tmp, body); err != nil {
+	if _, err := io.CopyBuffer(tmp, body, make([]byte, 1<<20)); err != nil {
 		tmp.Close()
 		s.handleErr(w, err)
 		return

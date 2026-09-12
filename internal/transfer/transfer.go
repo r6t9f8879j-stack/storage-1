@@ -264,7 +264,7 @@ func (m *Manager) fetch(ctx context.Context, t meta.Transfer) (*fetchedBlob, err
 	pr := &progressReader{r: body, cb: func(n, sz int64) {
 		_ = m.meta.UpdateTransferProgress(t.ID, n, sz)
 	}}
-	n, copyErr := io.Copy(tmp, pr)
+	n, copyErr := io.CopyBuffer(tmp, pr, make([]byte, 1<<20))
 	closeErr := tmp.Close()
 	if copyErr != nil {
 		_ = m.meta.UpdateTransferProgress(t.ID, n, total)

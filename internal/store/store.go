@@ -206,7 +206,8 @@ func (s *Store) WriteBlob(hash string, size int64, r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	n, cerr := io.Copy(f, r)
+	buf := make([]byte, 1<<20)
+	n, cerr := io.CopyBuffer(f, r, buf)
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if cerr != nil {

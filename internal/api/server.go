@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"storaged/internal/auth"
 	"storaged/internal/config"
+	"storaged/internal/debug"
 	"storaged/internal/meta"
 	"storaged/internal/repl"
 	"storaged/internal/store"
@@ -124,6 +126,10 @@ func (s *Server) Handler() http.Handler {
 	// streaming ZIP archive of a bucket
 	mux.HandleFunc("GET /v1/buckets/{b}/zip", authz(s, ScopeRead)(s.handleZip))
 
+	mux.HandleFunc("GET /v1/debug/logs", authz(s, ScopeRead)(s.handleDebugLogs))
+	mux.HandleFunc("GET /v1/debug/stats", authz(s, ScopeRead)(s.handleDebugStats))
+	mux.HandleFunc("GET /v1/debug/routes", authz(s, ScopeRead)(s.handleDebugRoutes))
+
 	mux.Handle("GET /_internal/health", peerAuth(s, s.handleInternalHealth))
 	mux.Handle("GET /_internal/oplog", peerAuth(s, s.handleInternalOplog))
 	mux.Handle("GET /_internal/inventory", peerAuth(s, s.handleInternalInventory))
@@ -206,8 +212,52 @@ func peerAuth(s *Server, next http.HandlerFunc) http.HandlerFunc {
 
 func logit(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		next(w, r)
+		sw := &statusWriter{ResponseWriter: w, code: 200}
+		start := time.Now()
+		next(sw, r)
+		debug.AddAccess(r.Method, r.URL.Path, remoteKey(r), sw.code, time.Since(start))
 	}
+}
+
+// statusWriter captures the response status while preserving streaming
+// (Flush) and sendfile (ReaderFrom) behaviour for large downloads.
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+	head bool
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if !s.head {
+		s.code = code
+		s.head = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if !s.head {
+		s.code = 200
+		s.head = true
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !s.head {
+		s.code = 200
+		s.head = true
+	}
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(s.ResponseWriter, r)
 }
 
 func recoverMiddleware(h http.Handler) http.Handler {

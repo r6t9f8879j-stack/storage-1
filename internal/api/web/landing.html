@@ -471,6 +471,7 @@ tr.highlight td{background:rgba(77,159,255,.06)}
     <div class="tab active" onclick="switchTab('overview',this)">Overview</div>
     <div class="tab" onclick="switchTab('files',this)">Files</div>
     <div class="tab" onclick="switchTab('api',this)">API</div>
+    <div class="tab" onclick="switchTab('debug',this)">Debug</div>
   </div>
 
   <!-- Overview tab -->
@@ -561,6 +562,34 @@ tr.highlight td{background:rgba(77,159,255,.06)}
         <span class="card-toggle">▸</span>
       </div>
       <div class="card-body" id="quickstart-body"></div>
+    </div>
+  </div>
+
+  <div id="tab-debug" style="display:none">
+    <div class="card open" id="card-debug" style="--card-accent:var(--yellow)">
+      <div class="card-head" onclick="tog(this)">
+        <h2>Debug &amp; logs</h2>
+        <span class="badge" id="dbg-badge">loading…</span>
+      </div>
+      <div class="card-body">
+        <div class="controls" style="margin-bottom:.6rem">
+          <button class="ctrl-btn" onclick="debugReload()">refresh now</button>
+          <label style="font-size:.62rem;color:var(--dim);display:flex;align-items:center;gap:.35rem;cursor:pointer">
+            <input type="checkbox" id="dbg-auto" checked onchange="debugAuto(this.checked)"> auto-refresh 5s
+          </label>
+          <span style="font-size:.6rem;color:var(--dim)">endpoints: <code>GET /v1/debug/stats</code> · <code>GET /v1/debug/logs?n=250</code> · <code>GET /v1/debug/routes</code> (Bearer auth)</span>
+        </div>
+        <div style="display:flex;gap:.9rem;flex-wrap:wrap">
+          <div style="flex:1;min-width:300px">
+            <div style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Runtime stats</div>
+            <div id="dbg-stats" style="font-family:var(--mono);font-size:.62rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem;white-space:pre;overflow:auto;max-height:52vh"></div>
+          </div>
+          <div style="flex:1;min-width:300px">
+            <div style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Recent logs (newest at bottom)</div>
+            <div id="dbg-logs" style="font-family:var(--mono);font-size:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem;white-space:pre-wrap;overflow:auto;max-height:52vh"></div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -714,7 +743,9 @@ function switchTab(id, el) {
   $('tab-overview').style.display = id === 'overview' ? '' : 'none';
   $('tab-files').style.display = id === 'files' ? '' : 'none';
   $('tab-api').style.display = id === 'api' ? '' : 'none';
+  $('tab-debug').style.display = id === 'debug' ? '' : 'none';
   if (id === 'files') refreshFiles();
+  if (id === 'debug') debugReload();
 }
 
 // ── Card collapse ────────────────────────────────────────────────────
@@ -1168,16 +1199,16 @@ async function doUpload() {
   const btn = event && event.target; if (btn) btn.disabled = true;
   toast('uploading ' + file.name + '…');
   try {
-    await fetch(objPath(FB.bucket, key), {
+    await apiFetch(objPath(FB.bucket, key), {
       method: 'PUT',
-      headers: hdrs({ 'Content-Type': file.type || 'application/octet-stream' }),
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
       body: file
     });
     if (fileEl) fileEl.value = '';
     toast('uploaded: ' + key);
     loadFiles(true);
   } catch (err) {
-    toast('upload: ' + (err.message || err), true);
+    toast('upload failed: ' + (err.message || err), true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1267,6 +1298,7 @@ async function deleteEntry(i) {
   const body = $('transfers-body');
   let tfKey = apiKey();
   let transfers = D.transfers || [];
+  let torrentFile = null; // survives re-renders (auto-refresh rebuilds the DOM)
 
   function tfPct(t) {
     if (t.status === 'done') return 100;
@@ -1280,6 +1312,9 @@ async function deleteEntry(i) {
   }
 
   function render() {
+    const oldUrl = $('tf-url') ? $('tf-url').value : '';
+    const oldKey = $('tf-key') ? $('tf-key').value : '';
+    const oldBucket = $('tf-bucket') ? $('tf-bucket').value : '';
     const rows = transfers.map(t => {
       const pct = tfPct(t);
       const barColor = t.status === 'done' ? 'var(--green)'
@@ -1351,11 +1386,21 @@ async function deleteEntry(i) {
           <tbody>${rows || '<tr><td colspan="8" style="color:var(--dim)">no transfers yet</td></tr>'}</tbody>
         </table>
       </div>`;
-    $('tf-bucket').value = D.buckets && D.buckets[0] && D.buckets[0].name || '';
+    const prevBucket = D.buckets && D.buckets[0] && D.buckets[0].name || '';
+    $('tf-bucket').value = oldBucket || prevBucket;
+    if (oldKey) $('tf-key').value = oldKey;
+    if (torrentFile) {
+      $('tf-url').value = '';
+      $('tf-file-label').textContent = torrentFile.name || '.torrent file';
+      $('tf-file-name').textContent = 'picked, clears URL field';
+    } else if (oldUrl) {
+      $('tf-url').value = oldUrl;
+    }
   }
 
   window.tfFileChanged = function(el) {
-    const name = el.files && el.files[0] ? el.files[0].name : '';
+    torrentFile = (el.files && el.files[0]) || null;
+    const name = torrentFile ? torrentFile.name : '';
     $('tf-file-label').textContent = name || '.torrent file';
     $('tf-file-name').textContent = name ? 'picked, clears URL field' : '';
     if (name) $('tf-url').value = '';
@@ -1366,8 +1411,7 @@ async function deleteEntry(i) {
     if (!bucket) return alert('select a bucket first');
     const urlEl = $('tf-url');
     const url = urlEl ? urlEl.value.trim() : '';
-    const fileEl = $('tf-file');
-    const file = fileEl && fileEl.files[0];
+    const file = torrentFile;
     const keyEl = $('tf-key');
     const key = keyEl ? keyEl.value.trim() : '';
     if (!hasCreds()) return alert('sign in or enter an API key above');
@@ -1398,6 +1442,8 @@ async function deleteEntry(i) {
     }
     const d = await res.json();
     if (d.transfer) transfers.unshift(d.transfer);
+    torrentFile = null;
+    const fileEl = $('tf-file');
     if (fileEl) fileEl.value = '';
     if ($('tf-file-label')) $('tf-file-label').textContent = '.torrent file';
     if ($('tf-file-name')) $('tf-file-name').textContent = '';
@@ -1437,6 +1483,77 @@ async function deleteEntry(i) {
   }, 4000);
 
   render();
+})();
+
+// ── Debug & logs ─────────────────────────────────────────────────────
+(function(){
+  let timer = null;
+  const statsEl = $('dbg-stats');
+  const logsEl = $('dbg-logs');
+  const badge = $('dbg-badge');
+
+  async function loadStats() {
+    try {
+      const d = await apiFetch(location.origin + '/v1/debug/stats');
+      statsEl.textContent = formatDbg(d);
+      badge.textContent = 'updated ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      statsEl.textContent = '✗ stats unavailable: ' + (e.message || e);
+      badge.textContent = 'auth needed';
+    }
+  }
+
+  async function loadLogs() {
+    if (!hasCreds()) return;
+    try {
+      const d = await apiFetch(location.origin + '/v1/debug/logs?n=250');
+      const lines = (d.logs || []).map(l => {
+        const t = (l.ts || '').substring(11, 19);
+        if (l.kind === 'access') return t + ' access  ' + String(l.status).padStart(3) + '  ' + l.method + ' ' + l.path + '  ' + l.duration_ms + 'ms  ' + (l.remote || '');
+        return t + ' app     ' + (l.line || '');
+      });
+      logsEl.textContent = lines.join('\n');
+    } catch (e) {
+      logsEl.textContent = '✗ logs unavailable: ' + (e.message || e);
+    }
+  }
+
+  function fmt(n) {
+    if (typeof n === 'number' && n >= 0) return n.toLocaleString();
+    return String(n);
+  }
+  function human(n) {
+    if (typeof n !== 'number') return String(n);
+    if (typeof humanBytes === 'function') return humanBytes(n);
+    return fmt(n);
+  }
+  function formatDbg(d) {
+    const out = [];
+    for (const section of ['node', 'runtime', 'meta', 'store', 'transfers']) {
+      const o = d[section];
+      if (!o) continue;
+      out.push('── ' + section.toUpperCase() + ' ──');
+      for (const k of Object.keys(o)) {
+        let v = o[k];
+        if (typeof v === 'number') {
+          if (/mem|bytes|size|free/.test(k) && v > 1024) v = human(v);
+          else v = fmt(v);
+        } else if (v === true) v = 'true';
+        else if (v === false) v = 'false';
+        out.push('  ' + String(k).padEnd(16) + v);
+      }
+    }
+    return out.join('\n');
+  }
+
+  window.debugReload = function() { loadStats(); loadLogs(); };
+  window.debugAuto = function(on) {
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (on) timer = setInterval(loadLogs, 5000);
+  };
+  debugReload();
+  debugAuto(true);
 })();
 
 // ── Durability & Hardening ───────────────────────────────────────────

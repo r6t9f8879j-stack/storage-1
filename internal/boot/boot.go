@@ -17,6 +17,7 @@ import (
 	"storaged/internal/api"
 	"storaged/internal/auth"
 	"storaged/internal/config"
+	"storaged/internal/debug"
 	"storaged/internal/meta"
 	"storaged/internal/repl"
 	"storaged/internal/store"
@@ -25,6 +26,8 @@ import (
 
 // Run loads config and starts serving until ctx is cancelled.
 func Run(ctx context.Context, cfgPath string) error {
+	debug.Attach()
+
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
