@@ -32,6 +32,7 @@ jobs:
     env:
       STORAGED_LISTEN: 127.0.0.1:5000
       STORAGED_DATA_DIR: D:\storage
+      STORAGED_BASE: http://127.0.0.1:5000
       STORAGED_NODE_ID: ${{ vars.STORAGED_NODE_ID }}
       STORAGED_ROLE: ${{ vars.STORAGED_ROLE }}
       STORAGED_ADMIN_KEY: ${{ secrets.STORAGED_ADMIN_KEY }}
@@ -115,6 +116,7 @@ jobs:
 
       - name: Restore rescue snapshot (previous successful run)
         if: steps.prevrun.outputs.run_id != ''
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: storaged-rescue
