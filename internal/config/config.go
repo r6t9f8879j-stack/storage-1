@@ -97,13 +97,19 @@ func defaults() *Config {
 	}
 }
 
-// defaultTorrentTrackers is a small set of long-lived public trackers, used
-// only when a magnet link lists none of their own.
+// defaultTorrentTrackers is a small set of long-lived public trackers, added to
+// torrents/magnets that carry no (or few) usable ones. The HTTP(S) announce URLs
+// go first on purpose: they only need outbound TCP (port 80/443), which is what
+// GitHub-hosted runners reliably allow. udp:// trackers (and DHT) need outbound
+// UDP, which the runners' Azure NAT commonly filters — keep a couple for the
+// normal-network case, but never rely on them first.
 func defaultTorrentTrackers() []string {
 	return []string{
-		"udp://tracker.opentrackr.org:1337/announce",
+		"https://tracker.opentrackr.org:443/announce",
+		"http://tracker.opentrackr.org:1337/announce",
+		"http://tracker.openbittorrent.com:80/announce",
+		"https://tracker.gbitt.info:443/announce",
 		"udp://open.tracker.cl:1337/announce",
-		"udp://tracker.openbittorrent.com:6969/announce",
 		"udp://exodus.desync.com:6969/announce",
 	}
 }

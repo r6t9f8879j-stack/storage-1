@@ -577,7 +577,7 @@ tr.highlight td{background:rgba(77,159,255,.06)}
           <label style="font-size:.62rem;color:var(--dim);display:flex;align-items:center;gap:.35rem;cursor:pointer">
             <input type="checkbox" id="dbg-auto" checked onchange="debugAuto(this.checked)"> auto-refresh 5s
           </label>
-          <span style="font-size:.6rem;color:var(--dim)">endpoints: <code>GET /v1/debug/stats</code> · <code>GET /v1/debug/logs?n=250</code> · <code>GET /v1/debug/routes</code> (Bearer auth)</span>
+          <span style="font-size:.6rem;color:var(--dim)">endpoints: <code>GET /v1/debug/stats</code> · <code>GET /v1/debug/logs?n=250</code> · <code>GET /v1/debug/net</code> · <code>GET /v1/debug/routes</code> (Bearer auth)</span>
         </div>
         <div style="display:flex;gap:.9rem;flex-wrap:wrap">
           <div style="flex:1;min-width:300px">
@@ -591,6 +591,10 @@ tr.highlight td{background:rgba(77,159,255,.06)}
           <div style="flex:1;min-width:260px">
             <div style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Live routes <span id="dbg-routes-count" style="color:var(--dim2)"></span></div>
             <div id="dbg-routes" style="font-family:var(--mono);font-size:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem;overflow:auto;max-height:52vh"></div>
+          </div>
+          <div style="flex:1;min-width:300px">
+            <div style="font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Tracker reachability <span style="color:var(--dim2)">(upstream probe)</span></div>
+            <div id="dbg-net" style="font-family:var(--mono);font-size:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem;white-space:pre-wrap;overflow:auto;max-height:52vh"></div>
           </div>
         </div>
       </div>
@@ -1594,6 +1598,7 @@ async function deleteEntry(i) {
   const statsEl = $('dbg-stats');
   const logsEl = $('dbg-logs');
   const routesEl = $('dbg-routes');
+  const netEl = $('dbg-net');
   const badge = $('dbg-badge');
 
   // apiFetch takes a *path*: it prepends location.origin itself. Passing an
@@ -1700,7 +1705,38 @@ async function deleteEntry(i) {
     }
   }
 
-  window.debugReload = function() { loadStats(); loadLogs(); loadRoutes(); };
+  // GET /v1/debug/net probes each configured tracker over its own transport
+  // (HTTP/S over TCP, udp:// over raw UDP). On GitHub-hosted runners UDP is
+  // typically filtered while TCP egress works — the two explains 0%-stuck
+  // torrents, so render the verdict right in the debug page.
+  async function loadNet() {
+    if (!netEl) return;
+    if (!hasCreds()) {
+      netEl.textContent = '✗ probe needs credentials — ' + NO_CREDS;
+      return;
+    }
+    try {
+      const d = await apiFetch('/v1/debug/net');
+      const rows = (d.results || []).map(rs => {
+        const mark = rs.ok ? '✔' : '✗';
+        const color = rs.ok ? '#4ade80' : '#f87171';
+        return `<div style="display:flex;gap:.45rem;padding:.06rem 0">
+          <span style="color:${color};flex:none">${mark}</span>
+          <span class="meth ${esc(rs.proto)}" style="flex:none">${esc(rs.proto)}</span>
+          <span style="overflow-wrap:anywhere;color:var(--dim)">${esc(rs.url)}</span>
+          <span style="flex:none;color:var(--dim2)">${esc(rs.elapsed)}</span>
+        </div>
+        <div style="padding:0 0 .1rem 1.35rem;color:var(--dim2);overflow-wrap:anywhere">${esc(rs.detail || '')}</div>`;
+      }).join('');
+      netEl.innerHTML = rows || '<span style="color:var(--dim)">no configured trackers — set STORAGED_TORRENT_TRACKERS</span>';
+    } catch (e) {
+      netEl.textContent = (e && e.status === 401)
+        ? '✗ unauthorized — ' + NO_CREDS
+        : '✗ probe unavailable: ' + (e.message || e);
+    }
+  }
+
+  window.debugReload = function() { loadStats(); loadLogs(); loadRoutes(); loadNet(); };
   window.debugAuto = function(on) {
     if (timer) clearInterval(timer);
     timer = null;

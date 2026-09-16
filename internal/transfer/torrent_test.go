@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/anacrolix/torrent"
@@ -29,7 +30,10 @@ func TestSanitizeName(t *testing.T) {
 }
 
 func TestAddFallbackTrackers(t *testing.T) {
-	fallback := []string{"udp://tracker.example:1337/announce"}
+	fallback := []string{
+		"https://tracker.example:443/announce",
+		"udp://tracker.example:1337/announce",
+	}
 
 	// a magnet with no trackers of its own gets the configured fallbacks
 	spec, err := torrent.TorrentSpecFromMagnetUri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
@@ -41,14 +45,27 @@ func TestAddFallbackTrackers(t *testing.T) {
 		t.Errorf("tracker count = %d, want %d", got, len(fallback))
 	}
 
-	// a magnet that already has trackers is left alone
+	// a magnet that already has trackers keeps them AND gains the fallbacks
+	// (its own might be udp://-only, so TCP-based HTTP(S) fallbacks are still
+	// worth announcing to)
 	spec, err = torrent.TorrentSpecFromMagnetUri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=udp%3A%2F%2Fown.example%3A80")
 	if err != nil {
 		t.Fatalf("parse magnet: %v", err)
 	}
 	addFallbackTrackers(spec, fallback)
-	if got := trackerCount(spec); got != 1 {
-		t.Errorf("tracker count = %d, want the magnet's own 1", got)
+	if got := trackerCount(spec); got != 1+len(fallback) {
+		t.Errorf("tracker count = %d, want magnet's 1 + %d fallbacks", got, len(fallback))
+	}
+
+	// a spec that already lists a fallback URL is not asked to duplicate it
+	spec, err = torrent.TorrentSpecFromMagnetUri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=" +
+		url.QueryEscape(fallback[0]))
+	if err != nil {
+		t.Fatalf("parse magnet: %v", err)
+	}
+	addFallbackTrackers(spec, fallback)
+	if got := trackerCount(spec); got != len(fallback) {
+		t.Errorf("tracker count = %d, want %d (no duplicates)", got, len(fallback))
 	}
 
 	// disabling (empty list) is a no-op

@@ -103,6 +103,7 @@ Auth: `Authorization: Bearer <admin|read key>` unless noted.
 | `GET /v1/buckets/{b}/transfers` · `GET /v1/transfers/{id}` | transfer status / progress |
 | `DELETE /v1/buckets/{b}/transfers/{id}` | cancel a queued/running transfer |
 | `POST /v1/buckets/{b}/transfers/{id}/retry` | re-queue a failed/cancelled transfer (torrents resume) |
+| `GET /v1/debug/net` | probe each tracker URL over its own transport (TCP for HTTP(S), raw UDP for udp://) — shows what the runner's egress allows |
 | `GET /v1/trash` | list trashed objects |
 | `POST /v1/trash/restore` · `POST /v1/trash/purge` | restore one / permanently delete one |
 | `DELETE /v1/trash` | purge everything in the trash |
@@ -170,6 +171,17 @@ go run ./cmd/ost ls media videos/      # contents of videos/
   their own fall back to `torrent_trackers` / `STORAGED_TORRENT_TRACKERS`
   (a few public trackers by default), so peer discovery does not depend on DHT
   alone.
+  **GitHub-hosted runners** (`windows-latest`) sit behind an Azure NAT that
+  provides no inbound connectivity and commonly filters outbound UDP — while
+  allowing outbound TCP. Peer discovery and transport are therefore tuned for
+  TCP: the fallback tracker list leads with HTTP(S) announce URLs (only
+  TCP 80/443 needed), fallback trackers are appended to a torrent/magnet even
+  when it lists its own (which may be udp://-only), and the torrent client
+  disables uTP/IPv6 so all peer data flows over plain TCP. `GET /v1/debug/net`
+  probes every configured tracker over its own transport and returns
+  per-tracker reachability — run it from the dashboard's Debug tab to confirm
+  the runner can actually reach the tracker network before blaming a dead
+  swarm.
   Failures instead of hangs: a magnet no peer or tracker can serve fails after
   `TorrentMetadataTimeout` (3 min), and a swarm that stops delivering data fails
   after `TorrentStallTimeout` (5 min) with peer/seeder/tracker counts. A crashed

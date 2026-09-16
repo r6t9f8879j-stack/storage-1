@@ -24,12 +24,17 @@ gc_grace         = "24h"        # orphaned blobs younger than this survive GC
 signed_url_ttl   = "5m"         # lifetime of presigned URLs
 rate_per_minute  = 600
 
-# Extra trackers for magnet links that list none of their own (most public
-# magnets). Env: STORAGED_TORRENT_TRACKERS (comma separated, empty disables).
+# Extra trackers, appended to magnets and .torrent files that can use them.
+# HTTP(S) announce URLs go first: they only need outbound TCP (80/443), which
+# is what GitHub-hosted runners reliably allow; udp:// trackers (and DHT) need
+# outbound UDP, which runner egress commonly filters. Env:
+# STORAGED_TORRENT_TRACKERS (comma separated, set to a single comma to disable).
 torrent_trackers = [
-  "udp://tracker.opentrackr.org:1337/announce",
+  "https://tracker.opentrackr.org:443/announce",
+  "http://tracker.opentrackr.org:1337/announce",
+  "http://tracker.openbittorrent.com:80/announce",
+  "https://tracker.gbitt.info:443/announce",
   "udp://open.tracker.cl:1337/announce",
-  "udp://tracker.openbittorrent.com:6969/announce",
   "udp://exodus.desync.com:6969/announce",
 ]
 

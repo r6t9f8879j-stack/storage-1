@@ -140,6 +140,13 @@ func (m *Manager) torrentClient() (*torrent.Client, error) {
 	cfg.Seed = false
 	cfg.NoUpload = true
 	cfg.NoDHT = false
+	// GitHub-hosted runners sit behind an Azure NAT that filters UDP and offers
+	// no inbound connectivity: anacrolix's default uTP peer transport (which is
+	// UDP) and IPv6 connections are exactly what stalls there. Force plain TCP
+	// for peer data — outbound TCP is the one transport the runners' egress
+	// allows — and skip IPv6 to avoid slow dual-stack timeouts.
+	cfg.DisableUTP = true
+	cfg.DisableIPv6 = true
 	cl, err := torrent.NewClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("torrent client: %w", err)
@@ -470,14 +477,43 @@ func (a *aggregateTracker) add(n int64) {
 	}
 }
 
-// addFallbackTrackers appends the configured announce URLs to a magnet spec
-// that carries none of its own (most public magnets list no trackers, which
-// would leave peer discovery to DHT alone).
+// addFallbackTrackers appends the configured announce URLs to a torrent spec.
+// They are added *in addition to* any trackers the source already lists (so a
+// magnet or .torrent whose own trackers are all udp:// still gets TCP-based
+// HTTP(S) announce URLs), deduplicated against what is already present.
+// Duplicate URLs within the existing tiers are preserved — anacrolix tolerates
+// them, and rewriting tiers risks dropping the distinction between tiers.
 func addFallbackTrackers(spec *torrent.TorrentSpec, extra []string) {
-	if spec == nil || len(extra) == 0 || trackerCount(spec) > 0 {
+	if spec == nil || len(extra) == 0 {
 		return
 	}
-	spec.Trackers = append(spec.Trackers, append([]string(nil), extra...))
+	seen := map[string]bool{}
+	for _, tier := range spec.Trackers {
+		for _, u := range tier {
+			seen[u] = true
+		}
+	}
+	// Keep the caller's tiers untouched unless we actually add something: a
+	// tracker-less spec starts with a nil/empty Trackers field and anacrolix
+	// treats an *empty* slice differently from "no trackers".
+	var add []string
+	for _, u := range extra {
+		if !seen[u] {
+			seen[u] = true
+			add = append(add, u)
+		}
+	}
+	if len(add) == 0 {
+		return
+	}
+	if len(spec.Trackers) == 0 {
+		spec.Trackers = [][]string{add}
+		return
+	}
+	tiers := make([][]string, 0, len(spec.Trackers)+1)
+	tiers = append(tiers, spec.Trackers...)
+	tiers = append(tiers, add)
+	spec.Trackers = tiers
 }
 
 // torrentSpecFor builds the torrent spec for a transfer's source (uploaded
@@ -493,7 +529,15 @@ func torrentSpecFor(t meta.Transfer, fallbackTrackers []string) (*torrent.Torren
 		if err != nil {
 			return nil, fmt.Errorf("bad .torrent metainfo: %w", err)
 		}
-		return torrent.TorrentSpecFromMetaInfoErr(mi)
+		spec, err := torrent.TorrentSpecFromMetaInfoErr(mi)
+		if err != nil {
+			return nil, err
+		}
+		// Same TCP-first fallback as magnets: a .torrent whose own announce URLs
+		// are all udp:// would otherwise get no peer list on networks that filter
+		// UDP (e.g. GitHub-hosted runner egress).
+		addFallbackTrackers(spec, fallbackTrackers)
+		return spec, nil
 	case strings.HasPrefix(t.URL, "magnet:"):
 		spec, err := torrent.TorrentSpecFromMagnetUri(t.URL)
 		if err != nil {
