@@ -66,6 +66,28 @@ if (-not $proc) {
 }
 Start-Sleep -Seconds 3
 
+# 1b) background release-archive loop: lifetime copies of blobs + meta to a
+#     GitHub release (survives runner death / artifact retention). Round-trips
+#     the full blob set is avoided via content-hash-named bucket assets, so
+#     each flush only uploads what actually changed. Killed at handoff after a
+#     final force-flush below.
+$archiveLoopPid = $null
+$archiveScript = Join-Path $PSScriptRoot "release-archive.ps1"
+if (Test-Path $archiveScript) {
+    $pwsh = (Get-Command powershell -ErrorAction SilentlyContinue).Source
+    if ($pwsh) {
+        $arcOut = Join-Path $logDir "release-archive.out.log"
+        $arcErr = Join-Path $logDir "release-archive.err.log"
+        $arcProc = Start-Process -FilePath $pwsh `
+            -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",('"{0}"' -f $archiveScript)) `
+            -WindowStyle Hidden -RedirectStandardOutput $arcOut -RedirectStandardError $arcErr -PassThru
+        if ($arcProc) { $archiveLoopPid = $arcProc.Id; Log "release-archive loop started pid=$archiveLoopPid" }
+        else { Log "release-archive loop failed to start" }
+    } else { Log "powershell not found; skipping release-archive loop" }
+} else {
+    Log "release-archive.ps1 missing; skipping background archive"
+}
+
 # 2) cloudflared lifecycle. A follower doesn't run it until promoted; a leader
 #    starts it immediately. Keep its stdout/err in a log.
 $cfProc = $null
@@ -182,6 +204,11 @@ while ($true) {
     if ((-not $handedOff) -and ($uptimeMin -ge $MaxUptimeMin) -and (-not $h -or $amWriter)) {
         Log "handoff after $([int]$uptimeMin) minutes"
         & (Join-Path $PSScriptRoot "artifact-snapshot.ps1") | Out-Null
+        # final push to the lifetime release archive before the runner dies
+        # (own staging dir so this flush can't collide with the loop's temp zips)
+        $handoffStaging = Join-Path $env:TEMP "release-archive-handoff"
+        & (Join-Path $PSScriptRoot "release-archive.ps1") -Once -Force -Prune -StagingDir $handoffStaging | Out-Null
+        if ($archiveLoopPid) { try { Stop-Process -Id $archiveLoopPid -Force -ErrorAction SilentlyContinue } catch {} }
         if ($env:GH_TOKEN -and $env:GH_REPO) {
             $env:GH_TOKEN_OUT = $env:GH_TOKEN
             try {

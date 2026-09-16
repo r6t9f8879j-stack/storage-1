@@ -54,6 +54,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       WORKFLOW_SELF: storage-host.yml
+      STORAGED_ARCHIVE_RELEASE: backups
+      STORAGED_ARCHIVE_INTERVAL: 600
 
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +146,11 @@ jobs:
             }
           } else { Write-Host "no rescue artifact; starting fresh" }
 
+      - name: Restore lifetime archive from releases
+        shell: powershell
+        continue-on-error: true
+        run: powershell -ExecutionPolicy Bypass -File scripts/release-restore.ps1
+
       - name: Run storage node (keep-alive supervises + hands off)
         shell: powershell
         env:
@@ -163,6 +170,7 @@ jobs:
         shell: powershell
         run: |
           powershell -ExecutionPolicy Bypass -File scripts/artifact-snapshot.ps1
+          powershell -ExecutionPolicy Bypass -File scripts/release-archive.ps1 -Once -Force
 
       - name: Upload rescue artifact
         if: always()
