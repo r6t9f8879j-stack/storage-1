@@ -1151,7 +1151,11 @@ func (m *Meta) ListTransfers(ctx context.Context, bucket string, status string) 
 
 func (m *Meta) UpdateTransferProgress(id string, progress, size int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := m.db.Exec(`UPDATE transfers SET progress=?, updated_at=? WHERE id=? AND (progress<? OR progress=0)`, progress, now, id, progress)
+	// progress is monotonic (retry/skip paths can re-report lower counts), but
+	// the update must fire even when progress has NOT advanced: updated_at is
+	// also the liveness heartbeat RequeueStuckTransfers checks, and a multi-hour
+	// 50 GB download can sit at the same byte count for a whole tick.
+	_, err := m.db.Exec(`UPDATE transfers SET progress=MAX(progress,?), updated_at=? WHERE id=?`, progress, now, id)
 	if size > 0 {
 		_, _ = m.db.Exec(`UPDATE transfers SET size=? WHERE id=? AND size=0`, size, id)
 	}

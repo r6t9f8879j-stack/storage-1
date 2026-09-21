@@ -145,6 +145,41 @@ func (s *Store) PromoteFile(src string, hash string) error {
 // CommitHash moves an arbitrary fsynced file into blobs under a known hash.
 func (s *Store) CommitHash(src string, hash string) error { return s.PromoteFile(src, hash) }
 
+// PromoteExistingFile hashes src in place, then moves it into the blob store
+// under its content hash. This is the large-file path: a 50 GB torrent file
+// would otherwise be copied a second time through the store's tmp dir, doubling
+// peak disk usage and adding minutes of sequential I/O.
+//
+// Durability matches FinalizeTmp: the content was already written and flushed
+// by the torrent client, so the atomic rename (plus NTFS metadata journaling on
+// Windows) is what makes the bytes durable and addressable. On error the source
+// file is left untouched for the caller's fallback path.
+func (s *Store) PromoteExistingFile(src string) (hash string, size int64, err error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return "", 0, err
+	}
+	h := sha256.New()
+	_, copyErr := io.Copy(h, f)
+	st, statErr := f.Stat()
+	closeErr := f.Close()
+	if copyErr != nil {
+		return "", 0, fmt.Errorf("hash staged file: %w", copyErr)
+	}
+	if statErr != nil {
+		return "", 0, statErr
+	}
+	size = st.Size()
+	if closeErr != nil {
+		return "", 0, closeErr
+	}
+	hash = hex.EncodeToString(h.Sum(nil))
+	if err := s.PromoteFile(src, hash); err != nil {
+		return "", 0, err
+	}
+	return hash, size, nil
+}
+
 // AbortTmp removes a staging file.
 func (s *Store) AbortTmp(uploadID string) error {
 	return os.Remove(s.tmpPath(uploadID))

@@ -35,6 +35,12 @@ if (-not (Test-Path $ost)) { $ost = (Get-Command ost -ErrorAction SilentlyContin
 if (Test-Path $ArtifactDir) { Remove-Item -Recurse -Force $ArtifactDir }
 New-Item -ItemType Directory -Path $ArtifactDir | Out-Null
 
+# space check: a 50 GB rescue dump needs the zip volume + data volume to have
+# real headroom; log it so a "disk full" failure is diagnosable from the log.
+Get-PSDrive -PSProvider FileSystem | ForEach-Object {
+    Write-Host ("[snapshot] drive {0}: free {1:N1} GB / total {2:N1} GB" -f $_.Name, ($_.Free / 1GB), (($_.Used + $_.Free) / 1GB))
+}
+
 # 1) consistent DB snapshot (VACUUM INTO) + manifest. Never fatal: a down
 #    daemon (or a fresh node with no DB yet) must still yield a rescue zip,
 #    otherwise the next run's restore step fails and the node never starts.
@@ -77,14 +83,43 @@ if (-not $needsBlobs) {
         $needsBlobs = ($h.StatusCode -ne 200)
     } catch { $needsBlobs = $true }
 }
-if ($needsBlobs) {
-    Write-Host "[snapshot] no healthy peer; dumping full blobs"
-    $blobOut = Join-Path $ArtifactDir "blobs"
-    Copy-Item -Recurse (Join-Path $dataDir "blobs") $blobOut -Force
-}
 
-# 4) compress into a single .zip (artifact upload is easier)
+# 4) compress into a single .zip. Windows PowerShell 5.1's Compress-Archive
+#    corrupts/fails past 2 GB (it buffers whole files into memory and uses
+#    Int32 offsets), so a 50 GB rescue MUST NOT go through it. Stream every
+#    entry with ZipArchive instead: constant memory, no size limit, and
+#    NoCompression so the media bytes are untouched.
+# ZipArchive types live in System.IO.Compression; Windows PowerShell 5.1 does
+# not resolve them when only the FileSystem assembly is loaded.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zipDest = Join-Path $runnerTemp "storaged-rescue.zip"
-Compress-Archive -Path (Join-Path $ArtifactDir "*") -DestinationPath $zipDest -Force
-Write-Host "[snapshot] rescue artifact at $zipDest"
+if (Test-Path $zipDest) { Remove-Item $zipDest -Force }
+try {
+    $zip = [System.IO.Compression.ZipFile]::Open($zipDest, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $addFile = {
+            param($file, $entryName)
+            $e = $zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::NoCompression)
+            $es = $e.Open()
+            try { $r = $file.OpenRead(); try { $r.CopyTo($es) } finally { $r.Dispose() } } finally { $es.Dispose() }
+        }
+        foreach ($f in Get-ChildItem -File -Recurse $ArtifactDir) {
+            & $addFile $f $f.Name
+        }
+        if ($needsBlobs) {
+            Write-Host "[snapshot] no healthy peer; streaming full blobs into the rescue zip"
+            $blobsSrc = Join-Path $dataDir "blobs"
+            Get-ChildItem -Recurse -File $blobsSrc -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.Name.Length -ne 64) { return }
+                & $addFile $_ (("blobs/{0}/{1}" -f $_.Directory.Name, $_.Name))
+            }
+        }
+    } finally { $zip.Dispose() }
+} catch {
+    Write-Warning "streaming zip failed ($_); falling back to Compress-Archive of the metadata-only artifact"
+    if (Test-Path $zipDest) { Remove-Item $zipDest -Force }
+    Compress-Archive -Path (Join-Path $ArtifactDir "*") -DestinationPath $zipDest -Force
+}
+Write-Host "[snapshot] rescue artifact at $zipDest ($([math]::Round((Get-Item $zipDest).Length / 1GB), 2) GB)"
 Write-Host "[snapshot] blobs=$(($manifest | Measure-Object).Count)"

@@ -51,6 +51,10 @@ if (-not $StagingDir) { $StagingDir = Join-Path $runnerTemp "release-archive" }
 if (-not $StateFile)  { $StateFile  = Join-Path $StagingDir "release-archive-state.json" }
 New-Item -ItemType Directory -Force -Path $StagingDir | Out-Null
 
+# Both assemblies are required on Windows PowerShell 5.1: ZipArchiveMode and
+# ZipArchiveEntry live in System.IO.Compression, and loading only the FileSystem
+# assembly leaves that type unresolvable.
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 # ---------------------------------------------------------------- helpers
@@ -112,9 +116,17 @@ function New-ZipPart([object[]]$files, [string]$prefix) {
     if (Test-Path $tmp) { Remove-Item $tmp -Force }
     $zip = [System.IO.Compression.ZipFile]::Open($tmp, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
-        foreach ($f in $files) {
+        # Deterministic build: the zip's sha256 lives in the asset name and is
+        # what makes "upload only what changed" work. CreateEntry stamps the
+        # current time into every entry by default, so identical content would
+        # hash differently on every flush and re-upload the whole bucket each
+        # time the runner (and with it the state file) dies. Pin the timestamp
+        # and the entry order so identical blobs always zip to identical bytes.
+        $fixedTime = [DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+        foreach ($f in ($files | Sort-Object FullName)) {
             $rel = $f.FullName.Substring($dataDir.Length).TrimStart('\','/')
             $e = $zip.CreateEntry($rel, [System.IO.Compression.CompressionLevel]::NoCompression)
+            $e.LastWriteTime = $fixedTime
             $es = $e.Open()
             try { Copy-FileToStream $f.FullName $es } finally { $es.Dispose() }
         }
@@ -133,6 +145,8 @@ function New-MetaZip([string]$snapPath) {
     $zip = [System.IO.Compression.ZipFile]::Open($tmp, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
         $e = $zip.CreateEntry("meta.db", [System.IO.Compression.CompressionLevel]::NoCompression)
+        # fixed timestamp for a deterministic hash-in-name (see New-ZipPart)
+        $e.LastWriteTime = [DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
         $es = $e.Open()
         try { Copy-FileToStream $snapPath $es } finally { $es.Dispose() }
     } finally { $zip.Dispose() }
@@ -203,15 +217,25 @@ function Split-IntoBatches([array]$files, [long]$limit) {
 }
 
 function Upload-IfNew([string]$path, [string]$name, [hashtable]$remoteByName) {
-    if (-not (Test-Path $path)) { return }
+    if (-not (Test-Path $path)) { return $false }
     if ($remoteByName.ContainsKey($name)) {
         Log "skip (already archived) $name"
         Remove-Item $path -Force -ErrorAction Continue
-        return
+        return $true
     }
     Log "uploading $name ($([math]::Round((Get-Item $path).Length / 1MB)) MB)"
-    (& gh release upload $Release $path --repo $repo --clobber 2>&1) | Out-Null
-    Remove-Item $path -Force -ErrorAction Continue
+    $out = & gh release upload $Release $path --repo $repo --clobber 2>&1
+    $ok = ($LASTEXITCODE -eq 0)
+    if ($ok) {
+        Remove-Item $path -Force -ErrorAction Continue
+    } else {
+        # A failed upload must NOT delete the staged part and must surface here:
+        # the caller leaves the bucket un-marked so the next flush retries it.
+        # (50 GB blobs ship as ~35 pieces; a single silent failure would corrupt
+        # the restore invisibly.) GitHub rate limits / 5xx make retries normal.
+        Log "UPLOAD FAILED $name : $($out | Out-String)"
+    }
+    return $ok
 }
 
 # ---------------------------------------------------------------- state
@@ -234,6 +258,7 @@ function Save-State($s) {
 function Invoke-Flush {
     param([switch]$Frc, [switch]$Pru)
     Log "flush start (force=$Frc prune=$Pru)"
+    $metaFailed = $false
     if (-not (Test-Path (Join-Path $dataDir "blobs"))) { Log "no blobs dir yet; nothing to archive"; return }
 
     Ensure-Release
@@ -246,7 +271,10 @@ function Invoke-Flush {
     $snap = Get-MetaSnapshotPath
     if ($snap) {
         $mName = New-MetaZip $snap
-        if ($mName) { $keep[$mName] = $true; Upload-IfNew (Join-Path $StagingDir $mName) $mName $remoteByName }
+        if ($mName) {
+            $keep[$mName] = $true
+            if (-not (Upload-IfNew (Join-Path $StagingDir $mName) $mName $remoteByName)) { $metaFailed = $true }
+        }
     } else { Log "no meta.db snapshot available" }
 
     # 2) blobs, bucketised by sha256 prefix
@@ -254,6 +282,7 @@ function Invoke-Flush {
     $blobs = Get-BlobFiles
     $groups = @($blobs | Group-Object { $_.Name.Substring(0,2).ToLower() })
     Log "blob count=$($blobs.Count) buckets=$($groups.Count)"
+    $anyFailed = $false
 
     foreach ($g in $groups) {
         $hh = $g.Name
@@ -261,9 +290,10 @@ function Invoke-Flush {
         $sum = [int64](($files | Measure-Object -Property Length -Sum).Sum)
         $sig = Get-BucketSig $files $sum
         $partsDone = @()
+        $bucketFailed = $false
 
         $prev = $state[$hh]
-        if ((-not $Frc) -and $prev -and ($prev.sig -eq "$sig")) {
+        if ((-not $Frc) -and $prev -and ($prev.sig -eq "$sig") -and (-not $prev.failed)) {
             $partsDone = @($prev.parts)
             foreach ($p in $partsDone) { $keep[$p] = $true }
             continue
@@ -286,13 +316,21 @@ function Invoke-Flush {
             }
             foreach ($nm in $newNames) {
                 $keep[$nm] = $true
-                Upload-IfNew (Join-Path $StagingDir $nm) $nm $remoteByName
-                $partsDone += $nm
+                if (Upload-IfNew (Join-Path $StagingDir $nm) $nm $remoteByName) {
+                    $partsDone += $nm
+                } else {
+                    $bucketFailed = $true
+                    $anyFailed = $true
+                }
             }
         }
-        $state[$hh] = @{ sig = $sig; parts = $partsDone }
+        # Mark the bucket archived ONLY when every part uploaded. A bucket with
+        # failed parts is recorded as failed so the next flush retries it even
+        # though its sig is unchanged.
+        $state[$hh] = @{ sig = "$sig"; parts = @($partsDone); failed = [bool]$bucketFailed }
     }
     Save-State $state
+    if ($metaFailed) { $anyFailed = $true }
 
     # 3) prune stale remote assets (only when asked: handoff flush)
     if ($Pru) {
@@ -305,6 +343,8 @@ function Invoke-Flush {
         }
     }
     Log "flush done: kept=$(($keep.Keys | Measure-Object).Count) parts, remote=$(($remote | Measure-Object).Count) assets"
+    if ($anyFailed) { Log "WARNING: some uploads failed; they will be retried on the next flush" }
+    return
 }
 
 # ---------------------------------------------------------------- entry

@@ -40,6 +40,17 @@ foreach ($d in @($DataDir, "$DataDir\blobs", "$DataDir\tmp", "$DataDir\db", "$Da
 }
 Write-Host "[setup] storage directories ready"
 
+# 3b) disk headroom visibility. Large-file workflows (50 GB torrents) need the
+# data volume to cover staged + promoted copies at peak; log it up front so a
+# later 507 (high-water) is explainable from the log.
+$dataDrive = (Get-Item $DataDir -ErrorAction SilentlyContinue).PSDrive
+if ($dataDrive) {
+    $freeGB = [math]::Round($dataDrive.Free / 1GB, 1)
+    $totalGB = [math]::Round(($dataDrive.Used + $dataDrive.Free) / 1GB, 1)
+    Write-Host "[setup] drive $($dataDrive.Name): free $freeGB GB of $totalGB GB"
+    if ($freeGB -lt 100) { Write-Warning "[setup] less than 100 GB free on the data drive; 50 GB files may hit the high-water mark" }
+}
+
 # 4) if the machine survived the last run, the SQLite WAL may need a clean
 #    shutdown; storaged handles recovery via fsck-on-boot markers.
 Write-Host "[setup] done"

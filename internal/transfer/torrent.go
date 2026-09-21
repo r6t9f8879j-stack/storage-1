@@ -322,13 +322,29 @@ func (m *Manager) downloadTorrent(ctx context.Context, t meta.Transfer) (err err
 		defer ticker.Stop()
 		lastBytes := tt.BytesCompleted()
 		lastAdvance := time.Now()
+		// The fixed 5-minute stall timeout is too twitchy for 50 GB swarms: a
+		// healthy giant torrent routinely pauses for longer than that between
+		// piece deliveries (slow seeder, tracker re-announce windows, ISP
+		// throttling). Scale the allowance with the torrent's size: 1 minute
+		// per GiB, bounded to [10 min, 1 h].
+		stallTimeout := time.Duration(total/(1<<30)) * time.Minute
+		if stallTimeout < 10*time.Minute {
+			stallTimeout = 10 * time.Minute
+		}
+		if stallTimeout > time.Hour {
+			stallTimeout = time.Hour
+		}
 		for {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if bc := tt.BytesCompleted(); bc > 0 && bc < total {
-				_ = m.meta.UpdateTransferProgress(t.ID, bc, total)
-			}
+			// Report progress every tick, even when byte count is unchanged:
+			// UpdateTransferProgress also refreshes updated_at, which doubles as
+			// the liveness heartbeat. A 50 GB download can legitimately sit at
+			// the same byte count for a while during swarm ramp-up; without the
+			// keepalive it looks "stuck" and gets requeued.
+			bc := tt.BytesCompleted()
+			_ = m.meta.UpdateTransferProgress(t.ID, bc, total)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -340,11 +356,11 @@ func (m *Manager) downloadTorrent(ctx context.Context, t meta.Transfer) (err err
 					lastBytes, lastAdvance = bc, time.Now()
 					continue
 				}
-				if time.Since(lastAdvance) >= TorrentStallTimeout {
+				if time.Since(lastAdvance) >= stallTimeout {
 					st := tt.Stats()
 					return retryableF("stalled for %s at %s of %s (peers=%d, seeders=%d, trackers=%d, webseeds=%d): "+
 						"no data is arriving — the swarm may have no seeders or BitTorrent traffic may be blocked",
-						TorrentStallTimeout, byteSize(bc), byteSize(total), st.TotalPeers, st.ConnectedSeeders,
+						stallTimeout, byteSize(bc), byteSize(total), st.TotalPeers, st.ConnectedSeeders,
 						trackerCount(spec), webseedCount(spec))
 				}
 			}
@@ -391,51 +407,9 @@ downloaded:
 			continue
 		}
 
-		tmpID := fmt.Sprintf("%s-%02d", t.ID, i)
-		_ = m.sto.AbortTmp(tmpID)
-		tmp, err := m.sto.OpenTmp(tmpID)
-		if err != nil {
-			return err
-		}
-		rd := f.NewReader()
-		rd.SetContext(ctx)
-		pr := &progressReader{r: rd, cb: func(n, _ int64) {
-			tracker.add(n)
-		}}
-		// CopyN bounds reads to the file's exact length: anacrolix's torrent
-		// reader over-reads across piece boundaries into later files, so a
-		// plain io.Copy would capture the next file's leading bytes.
-		_, copyErr := io.CopyN(tmp, pr, f.Length())
-		closeErr := rd.Close()
-		closeErr2 := tmp.Close()
-		if copyErr != nil {
-			_ = m.sto.AbortTmp(tmpID)
-			return copyErr
-		}
-		if closeErr != nil {
-			_ = m.sto.AbortTmp(tmpID)
-			return closeErr
-		}
-		if closeErr2 != nil {
-			_ = m.sto.AbortTmp(tmpID)
-			return closeErr2
-		}
-
-		// a cancel that lands while the file was being copied out must still win:
-		// otherwise the transfer commits after the user cancelled it
-		if ctx.Err() != nil {
-			_ = m.sto.AbortTmp(tmpID)
-			return ctx.Err()
-		}
-
-		// re-check the lease before committing each file
-		if !m.canWrite() {
-			_ = m.sto.AbortTmp(tmpID)
-			return fmt.Errorf("node is no longer the writer; transfer not committed")
-		}
-		hash, size, _, err := m.sto.FinalizeTmp(tmpID)
-		if err != nil {
-			return err
+		hash, size, commitErr := m.commitTorrentFile(ctx, t, i, f, key, tracker)
+		if commitErr != nil {
+			return commitErr
 		}
 		obj := &meta.Object{
 			Bucket:      t.Bucket,
@@ -458,6 +432,77 @@ downloaded:
 	_ = m.meta.SetTransferStatus(t.ID, StatusDone, "")
 	m.log.Printf("transfer %s torrent done: %d file(s) -> %s/%s", t.ID, committed, t.Bucket, base)
 	return nil
+}
+
+// commitTorrentFile materializes one torrent file as a durable blob and
+// returns its (hash, size).
+//
+// For large files (torrents routinely deliver 50 GB+), copying the staged data
+// into the store's tmp dir first doubles peak disk usage and adds a full
+// sequential read+write pass. When the staged data is complete on disk, we
+// hash it in place and promote it directly instead — no tmp copy. Any failure
+// along that fast path falls back to the original copy-through-tmp route.
+func (m *Manager) commitTorrentFile(ctx context.Context, t meta.Transfer, i int, f *torrent.File, key string, tracker *aggregateTracker) (string, int64, error) {
+	tmpID := fmt.Sprintf("%s-%02d", t.ID, i)
+	_ = m.sto.AbortTmp(tmpID)
+
+	// fast path: the staged file is complete, so hash + promote in place.
+	// mmap-backed storage may also expose a sparse .part tail, so accept the
+	// fast path only when the final (non-.part) staged file exists at full size.
+	if fi, err := os.Stat(f.Path()); err == nil && fi.Size() == f.Length() {
+		hash, size, perr := m.sto.PromoteExistingFile(f.Path())
+		if perr == nil {
+			m.log.Printf("transfer %s promoted %s/%s (%s) from staged data without a tmp copy", t.ID, t.Bucket, key, byteSize(size))
+			return hash, size, nil
+		}
+		m.log.Printf("transfer %s: in-place promote of %s failed (%v); falling back to a tmp copy", t.ID, key, perr)
+	}
+
+	tmp, err := m.sto.OpenTmp(tmpID)
+	if err != nil {
+		return "", 0, err
+	}
+	rd := f.NewReader()
+	rd.SetContext(ctx)
+	pr := &progressReader{r: rd, cb: func(n, _ int64) {
+		tracker.add(n)
+	}}
+	// CopyN bounds reads to the file's exact length: anacrolix's torrent
+	// reader over-reads across piece boundaries into later files, so a
+	// plain io.Copy would capture the next file's leading bytes.
+	_, copyErr := io.CopyN(tmp, pr, f.Length())
+	closeErr := rd.Close()
+	closeErr2 := tmp.Close()
+	if copyErr != nil {
+		_ = m.sto.AbortTmp(tmpID)
+		return "", 0, copyErr
+	}
+	if closeErr != nil {
+		_ = m.sto.AbortTmp(tmpID)
+		return "", 0, closeErr
+	}
+	if closeErr2 != nil {
+		_ = m.sto.AbortTmp(tmpID)
+		return "", 0, closeErr2
+	}
+
+	// a cancel that lands while the file was being copied out must still win:
+	// otherwise the transfer commits after the user cancelled it
+	if ctx.Err() != nil {
+		_ = m.sto.AbortTmp(tmpID)
+		return "", 0, ctx.Err()
+	}
+
+	// re-check the lease before committing each file
+	if !m.canWrite() {
+		_ = m.sto.AbortTmp(tmpID)
+		return "", 0, fmt.Errorf("node is no longer the writer; transfer not committed")
+	}
+	hash, size, _, err := m.sto.FinalizeTmp(tmpID)
+	if err != nil {
+		return "", 0, err
+	}
+	return hash, size, nil
 }
 
 // aggregateTracker reports aggregate commit progress (~1 Hz).

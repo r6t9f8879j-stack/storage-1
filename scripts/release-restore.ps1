@@ -88,28 +88,76 @@ foreach ($a in $meta) {
 }
 
 # 3) reassemble split blobs (part-<hash>-<n>-<sha12>.bin, sorted by <n>)
+#    The hash is parsed from the RIGHT of the name: the archive prefix carries
+#    an optional bucket index (part-<hh>-<idx>-...), so left-splitting lands on
+#    the wrong token for multi-batch buckets.
 if ($bins.Count -gt 0) {
-    $groups = @($bins | Group-Object { ($_.name -split '-')[1] })
+    $groups = @($bins | Group-Object { ($_.name -split '-')[-3] })
+    Log "reassembling $($groups.Count) split blob(s) from $($bins.Count) pieces"
     foreach ($g in $groups) {
         $hash = $g.Name.ToLower()
+        if ($hash.Length -ne 64) { Log "skipping malformed piece group '$hash'"; continue }
         $hh = $hash.Substring(0,2)
-        $pieces = @($g.Group | Sort-Object { [int](($_.name -split '-')[2]) })
+        $pieces = @($g.Group | Sort-Object { [int](($_.name -split '-')[-2]) })
+        $expected = 1
+        foreach ($p in $pieces) {
+            $n = [int](($p.name -split '-')[-2])
+            if ($n -ne $expected) { Log "WARNING: piece gap in $hash (got n=$n, want $expected); reassembly will fail verification" }
+            $expected = $n + 1
+        }
         $out = Join-Path $dataDir "blobs\$hh\$hash"
         New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
 
-        $os = [System.IO.File]::Open($out, [System.IO.FileMode]::Create)
+        $os = $null
         try {
+            $os = [System.IO.File]::Open($out, [System.IO.FileMode]::Create)
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            # CryptoStream over the output hashes while writing (no second read
+            # pass over a 50 GB file).
+            $hashSink = [System.Security.Cryptography.CryptoStream]::new($os, $sha, [System.Security.Cryptography.CryptoStreamMode]::Write)
             foreach ($p in $pieces) {
                 $pt = Join-Path $DownloadDir $p.name
                 if (-not (Test-Path $pt)) {
                     (& gh release download $Release --repo $repo --pattern $p.name --dir $DownloadDir --clobber 2>&1) | Out-Null
                 }
-                $r = [System.IO.File]::OpenRead($pt)
-                try { $r.CopyTo($os) } finally { $r.Dispose() }
-                Remove-Item $pt -Force -ErrorAction Continue
+                if (Test-Path $pt) {
+                    # per-piece integrity: the zip's own sha12 is in its name
+                    $wantSha = ($p.name -split '-')[-1] -replace '\.bin$',''
+                    $gotSha = (Get-FileHash $pt -Algorithm SHA256).Hash.Substring(0,12).ToLower()
+                    if ($gotSha -ne $wantSha) {
+                        Log "piece $($p.name) failed verification (got $gotSha); re-downloading once"
+                        Remove-Item $pt -Force -ErrorAction Continue
+                        (& gh release download $Release --repo $repo --pattern $p.name --dir $DownloadDir --clobber 2>&1) | Out-Null
+                        if (Test-Path $pt) {
+                            $gotSha = (Get-FileHash $pt -Algorithm SHA256).Hash.Substring(0,12).ToLower()
+                        } else { $gotSha = "" }
+                        if ($gotSha -ne $wantSha) {
+                            Log "piece $($p.name) is corrupt on the remote too; $hash will fail verification"
+                        }
+                    }
+                    if (Test-Path $pt) {
+                        $r = [System.IO.File]::OpenRead($pt)
+                        try { $r.CopyTo($hashSink) } finally { $r.Dispose() }
+                        Remove-Item $pt -Force -ErrorAction Continue
+                    }
+                } else {
+                    Log "could not download piece $($p.name); $hash will fail verification"
+                }
             }
-        } finally { $os.Dispose() }
-        Log "reassembled $hash from $($pieces.Count) pieces"
+            $hashSink.Dispose() # finalizes the hash (and closes $os)
+            $os = $null
+            $actual = [BitConverter]::ToString($sha.Hash).Replace('-','').ToLower()
+            if ($actual -ne $hash) {
+                Log "reassembled blob does NOT match its content hash (want $hash got $actual); deleting the corrupt file"
+                Remove-Item $out -Force -ErrorAction Continue
+            } else {
+                Log "reassembled $hash from $($pieces.Count) pieces (hash verified)"
+            }
+        } catch {
+            Log "failed to reassemble $hash : $_"
+            if ($os) { try { $os.Dispose() } catch {} }
+            if (Test-Path $out) { Remove-Item $out -Force -ErrorAction Continue }
+        }
     }
 }
 

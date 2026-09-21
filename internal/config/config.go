@@ -87,7 +87,7 @@ func defaults() *Config {
 		DataDir:        "storage",
 		NodeID:         "node-a",
 		Role:           RoleLeader,
-		MaxBodyBytes:   2 << 30, // 2 GiB non-multipart cap
+		MaxBodyBytes:   64 << 30, // 64 GiB per-request cap (50 GB single files must fit)
 		HighWaterBytes: 10 << 30, // refuse writes when free space < 10 GiB
 		UploadTTLStr:    "24h",
 		GCGraceStr:      "24h",
